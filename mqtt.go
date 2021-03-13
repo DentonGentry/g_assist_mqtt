@@ -9,24 +9,84 @@ import (
 	"time"
 )
 
+// State extracted from tasmota/discovery/*/config events, used to construct
+// a Smart Home Sync response
 type TasmotaDevice struct {
+	MacAddress   string
 	IP           string
 	FriendlyName string
 	Hostname     string
+	Hardware     string
+	Software     string
+	HasRelays    bool
+	HasOnOff     bool
+}
+
+// Subset of IntentSync which we will send back to Google.
+// https://developers.google.com/assistant/smarthome/reference/intent/sync
+type IntentSync struct {
+	Id     string   `json:"id"`
+	Type   string   `json:"type"`
+	Traits []string `json:"traits"`
+	Name   struct {
+		DefaultNames []string `json:"defaultNames"`
+		Name         string   `json:"name"`
+	} `json:"name"`
+	WillReportState bool `json:"willReportState"`
+	DeviceInfo      struct {
+		Manufacturer string `json:"manufacturer"`
+		Model        string `json:"model"`
+		SwVersion    string `json:"swVersion"`
+	} `json:"deviceInfo"`
+}
+
+func (device *TasmotaDevice) ToIntentSync() IntentSync {
+	var sync IntentSync
+	sync.Id = device.MacAddress
+
+	if device.HasRelays {
+		sync.Type = "action.devices.types.SWITCH"
+	}
+	if device.HasOnOff {
+		sync.Traits = append(sync.Traits, "action.devices.traits.OnOff")
+	}
+	sync.Name.DefaultNames = append(sync.Name.DefaultNames, device.Hardware)
+	sync.Name.Name = device.FriendlyName
+	sync.WillReportState = false
+	sync.DeviceInfo.Manufacturer = "Tasmota"
+	sync.DeviceInfo.Model = device.Hardware
+	sync.DeviceInfo.SwVersion = device.Software
+
+	return sync
 }
 
 var devices = make(map[string]TasmotaDevice)
 
 // Parse JSON received on tasmota/discovery/*/config
-// {"ip":"10.1.10.1","dn":"Tasmota",
+// {"ip":"10.1.10.100",
+//  "dn":"Tasmota",
 //  "fn":["ParentsRoomSwitch",null,null,null,null,null,null,null],
-//  "hn":"parents-room-switch","mac":"BCDDC2000000","md":"MJ-S01 Switch","ty":0,"if":0,
-//  "ofln":"Offline","onln":"Online","state":["OFF","ON","TOGGLE","HOLD"],"sw":"9.3.1",
-//  "t":"parents-room-switch","ft":"%prefix%/%topic%/","tp":["cmnd","stat","tele"],
-//  "rl":[1,0,0,0,0,0,0,0],"swc":[-1,-1,-1,-1,-1,-1,-1,-1],
-//  "swn":[null,null,null,null,null,null,null,null],"btn":[0,0,0,0,0,0,0,0],
+//  "hn":"parents-room-switch",
+//  "mac":"BCDDC2000000",
+//  "md":"MJ-S01 Switch",
+//  "ty":0,
+//  "if":0,
+//  "ofln":"Offline",
+//  "onln":"Online",
+//  "state":["OFF","ON","TOGGLE","HOLD"],
+//  "sw":"9.3.1",
+//  "t":"parents-room-switch",
+//  "ft":"%prefix%/%topic%/",
+//  "tp":["cmnd","stat","tele"],
+//  "rl":[1,0,0,0,0,0,0,0],
+//  "swc":[-1,-1,-1,-1,-1,-1,-1,-1],
+//  "swn":[null,null,null,null,null,null,null,null],
+//  "btn":[0,0,0,0,0,0,0,0],
 //  "so":{"4":0,"11":0,"13":0,"17":0,"20":0,"30":0,"68":0,"73":0,"82":0,"114":0,"117":0},
-//  "lk":1,"lt_st":0,"sho":[0,0,0,0],"ver":1}
+//  "lk":1,
+//  "lt_st":0,
+//  "sho":[0,0,0,0],
+//  "ver":1}
 func ParseDeviceDiscovery(jsonStr []byte) (TasmotaDevice, error) {
 	var device TasmotaDevice
 
@@ -36,10 +96,28 @@ func ParseDeviceDiscovery(jsonStr []byte) (TasmotaDevice, error) {
 		return device, err
 	}
 
+	device.MacAddress = jsonMap["mac"].(string)
 	device.IP = jsonMap["ip"].(string)
 	fn := jsonMap["fn"].([]interface{})
 	device.FriendlyName = fn[0].(string)
 	device.Hostname = jsonMap["hn"].(string)
+	device.Hardware = jsonMap["md"].(string)
+	device.Software = jsonMap["sw"].(string)
+
+	relays := jsonMap["rl"].([]interface{})
+	for _, r := range relays {
+		if r != 0 {
+			device.HasRelays = true
+		}
+	}
+
+	state := jsonMap["state"].([]interface{})
+	for _, s := range state {
+		item := s.(string)
+		if item == "OFF" || item == "ON" {
+			device.HasOnOff = true
+		}
+	}
 
 	return device, nil
 }
@@ -95,6 +173,12 @@ func main() {
 		panic(err)
 	}
 	subscribeDiscover(client)
-	time.Sleep(60 * time.Second)
-	fmt.Println(devices)
+	time.Sleep(5 * time.Second)
+	for address, d := range devices {
+		b, err := json.MarshalIndent(d.ToIntentSync(), "", "  ")
+		if err != nil {
+			panic("json.Marshal failed")
+		}
+		fmt.Printf("%s = %s\n", address, string(b))
+	}
 }
