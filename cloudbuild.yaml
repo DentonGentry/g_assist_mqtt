@@ -1,0 +1,13 @@
+steps:
+# Build the container image
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['build', '-t', 'gcr.io/tailscalehomeautomation/my-image', '.']
+# Push the container image to Container Registry
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['push', 'gcr.io/tailscalehomeautomation/my-image']
+# Deploy container image to Cloud Run
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  entrypoint: gcloud
+  args: ['run', 'deploy', 'fulfillment', '--image', 'gcr.io/tailscalehomeautomation/my-image', '--region', 'us-west1', '--platform', 'managed', '--service-account', 'service-account@tailscalehomeautomation.iam.gserviceaccount.com']
+images:
+- gcr.io/tailscalehomeautomation/my-image

@@ -6,7 +6,6 @@ import (
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"os"
 	"strings"
-	"time"
 )
 
 // Subset of Intent SYNC which we will send back to Google.
@@ -175,7 +174,7 @@ func subscribeDiscover(client mqtt.Client) {
 	fmt.Printf("Subscribed to topic: %s\n", topic)
 }
 
-func setupMqtt() (mqtt.Client, error) {
+func SetupMQTT() {
 	var broker = "100.126.243.58"
 	var port = 1883
 	opts := mqtt.NewClientOptions()
@@ -188,24 +187,8 @@ func setupMqtt() (mqtt.Client, error) {
 	opts.OnConnectionLost = connectLostHandler
 	client := mqtt.NewClient(opts)
 	if token := client.Connect(); token.Wait() && token.Error() != nil {
-		return client, token.Error()
+		panic(token.Error())
 	}
 
-	return client, nil
-}
-
-func main() {
-	client, err := setupMqtt()
-	if err != nil {
-		panic(err)
-	}
 	subscribeDiscover(client)
-	time.Sleep(5 * time.Second)
-	for address, d := range devices {
-		b, err := json.MarshalIndent(d.ToIntentSyncResponse(), "", "  ")
-		if err != nil {
-			panic("json.Marshal failed")
-		}
-		fmt.Printf("%s = %s\n", address, string(b))
-	}
 }
