@@ -9,6 +9,51 @@ import (
 	"time"
 )
 
+// Subset of Intent SYNC which we will send back to Google.
+// https://developers.google.com/assistant/smarthome/reference/intent/sync
+type IntentSyncResponse struct {
+	Id     string   `json:"id"`
+	Type   string   `json:"type"`
+	Traits []string `json:"traits"`
+	Name   struct {
+		DefaultNames []string `json:"defaultNames"`
+		Name         string   `json:"name"`
+	} `json:"name"`
+	WillReportState bool `json:"willReportState"`
+	DeviceInfo      struct {
+		Manufacturer string `json:"manufacturer,omitempty"`
+		Model        string `json:"model,omitempty"`
+		SwVersion    string `json:"swVersion,omitempty"`
+	} `json:"deviceInfo,omitempty"`
+}
+
+// https://developers.google.com/assistant/smarthome/reference/intent/query
+type IntentQueryRequest struct {
+	RequestId string `json:"requestId"`
+	Inputs    []struct {
+		Intent  string `json:"intent"`
+		Payload struct {
+			Devices map[string]struct {
+				Id string `json:"id"`
+			} `json:"devices"`
+		} `json:"payload"`
+	} `json:"inputs"`
+}
+
+// https://developers.google.com/assistant/smarthome/reference/intent/query
+type IntentQueryResponse struct {
+	RequestId string `json:"requestId"`
+	Payload   struct {
+		ErrorCode   string `json:"errorCode,omitempty"`
+		DebugString string `json:"debugString,omitempty"`
+		Devices     []struct {
+			Id     string `json"id"`
+			Online bool   `json:"online"`
+			Status string `json:"status"`
+		} `json:"devices"`
+	} `json:"payload"`
+}
+
 // State extracted from tasmota/discovery/*/config events, used to construct
 // a Smart Home Sync response
 type TasmotaDevice struct {
@@ -22,26 +67,8 @@ type TasmotaDevice struct {
 	HasOnOff     bool
 }
 
-// Subset of IntentSync which we will send back to Google.
-// https://developers.google.com/assistant/smarthome/reference/intent/sync
-type IntentSync struct {
-	Id     string   `json:"id"`
-	Type   string   `json:"type"`
-	Traits []string `json:"traits"`
-	Name   struct {
-		DefaultNames []string `json:"defaultNames"`
-		Name         string   `json:"name"`
-	} `json:"name"`
-	WillReportState bool `json:"willReportState"`
-	DeviceInfo      struct {
-		Manufacturer string `json:"manufacturer"`
-		Model        string `json:"model"`
-		SwVersion    string `json:"swVersion"`
-	} `json:"deviceInfo"`
-}
-
-func (device *TasmotaDevice) ToIntentSync() IntentSync {
-	var sync IntentSync
+func (device *TasmotaDevice) ToIntentSyncResponse() IntentSyncResponse {
+	var sync IntentSyncResponse
 	sync.Id = device.MacAddress
 
 	if device.HasRelays {
@@ -175,7 +202,7 @@ func main() {
 	subscribeDiscover(client)
 	time.Sleep(5 * time.Second)
 	for address, d := range devices {
-		b, err := json.MarshalIndent(d.ToIntentSync(), "", "  ")
+		b, err := json.MarshalIndent(d.ToIntentSyncResponse(), "", "  ")
 		if err != nil {
 			panic("json.Marshal failed")
 		}
