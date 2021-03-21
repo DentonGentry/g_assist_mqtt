@@ -11,9 +11,8 @@ import (
 	"github.com/go-oauth2/oauth2/v4/store"
 )
 
-func OauthServer() {
+func SetupOauth(mux *http.ServeMux) {
 	manager := manage.NewDefaultManager()
-	// token memory store
 	manager.MustTokenStorage(store.NewMemoryTokenStore())
 
 	// client memory store
@@ -38,16 +37,14 @@ func OauthServer() {
 		log.Println("Response Error:", re.Error.Error())
 	})
 
-	http.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
 		err := srv.HandleAuthorizeRequest(w, r)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 		}
 	})
 
-	http.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
 		srv.HandleTokenRequest(w, r)
 	})
-
-	log.Fatal(http.ListenAndServe(":9096", nil))
 }

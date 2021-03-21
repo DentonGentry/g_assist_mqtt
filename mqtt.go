@@ -6,6 +6,7 @@ import (
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"os"
 	"strings"
+	"time"
 )
 
 // Subset of Intent SYNC which we will send back to Google.
@@ -167,13 +168,6 @@ var connectLostHandler mqtt.ConnectionLostHandler = func(client mqtt.Client, err
 	fmt.Printf("Connect lost: %v", err)
 }
 
-func subscribeDiscover(client mqtt.Client) {
-	topic := "tasmota/discovery/#"
-	token := client.Subscribe(topic, 1, nil)
-	token.Wait()
-	fmt.Printf("Subscribed to topic: %s\n", topic)
-}
-
 func SetupMQTT() {
 	var broker = "100.126.243.58"
 	var port = 1883
@@ -186,9 +180,12 @@ func SetupMQTT() {
 	opts.OnConnect = connectHandler
 	opts.OnConnectionLost = connectLostHandler
 	client := mqtt.NewClient(opts)
-	if token := client.Connect(); token.Wait() && token.Error() != nil {
-		panic(token.Error())
+	for token := client.Connect(); token.Wait() && token.Error() != nil; {
+		time.Sleep(15 * time.Second)
 	}
 
-	subscribeDiscover(client)
+	topic := "tasmota/discovery/#"
+	token := client.Subscribe(topic, 1, nil)
+	token.Wait()
+	fmt.Printf("Subscribed to topic: %s\n", topic)
 }
