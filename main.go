@@ -10,6 +10,12 @@ import (
 	"time"
 )
 
+func HandleRoot(w http.ResponseWriter, r *http.Request) {
+	// Access to '/' is not used in the actual appication, only for Google Cloud Run checking
+	// if we're alive. We delay the response so that Cloud Run will keep us active for a while.
+	time.Sleep(2 * time.Second)
+}
+
 func main() {
 	// Google Cloud Run will populate PORT automatically.
 	portStr := os.Getenv("PORT")
@@ -27,7 +33,7 @@ func main() {
 	mux.HandleFunc("/quitquitquit", func(w http.ResponseWriter, r *http.Request) {
 		srv.Shutdown(context.Background())
 	})
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {})
+	mux.HandleFunc("/", HandleRoot)
 
 	fmt.Println("Initializing fulfillment")
 	mux.HandleFunc("/fulfillment", HandleFulfillment)
