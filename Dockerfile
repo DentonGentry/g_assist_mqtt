@@ -8,8 +8,16 @@ RUN go build -mod=readonly -v -o server
 
 FROM golang:1.16-buster as tailscale
 WORKDIR /go/src/tailscale
-RUN git clone https://github.com/tailscale/tailscale.git && \
-    cd tailscale && go mod download && go install -mod=readonly ./cmd/tailscaled ./cmd/tailscale
+RUN git clone https://github.com/tailscale/tailscale.git && cd tailscale && go mod vendor && \
+    rm wgengine/monitor/monitor_linux.go && \
+    cat wgengine/monitor/monitor_polling.go | sed -e "s/+build .linux,/+build /" >wgengine/monitor/monitor_polling.go.new && \
+    mv wgengine/monitor/monitor_polling.go.new wgengine/monitor/monitor_polling.go && \
+    rm vendor/github.com/tailscale/wireguard-go/device/sticky_linux.go && \
+    cat vendor/github.com/tailscale/wireguard-go/device/sticky_default.go | sed -e "s/+build .linux,/+build /" >vendor/github.com/tailscale/wireguard-go/device/sticky_default.go.new && \
+    mv vendor/github.com/tailscale/wireguard-go/device/sticky_default.go.new vendor/github.com/tailscale/wireguard-go/device/sticky_default.go && \
+    cat net/netns/netns_linux.go | sed -e "s|sockErr = bindToDevice|//sockErr = bindToDevice|" >net/netns/netns_linux.go.new && \
+    mv net/netns/netns_linux.go.new net/netns/netns_linux.go && \
+    go install -mod=readonly ./cmd/tailscaled ./cmd/tailscale
 COPY . ./
 
 
@@ -18,7 +26,7 @@ COPY . ./
 # https://docs.docker.com/develop/develop-images/multistage-build/#use-multi-stage-builds
 FROM debian:buster-slim
 RUN set -x && apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates dnsutils wget iproute2 && \
     rm -rf /var/lib/apt/lists/*
 
 
