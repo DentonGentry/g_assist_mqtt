@@ -1,4 +1,4 @@
-FROM golang:1.16-buster as builder
+FROM golang:1.16.2-alpine3.13 as builder
 WORKDIR /app
 COPY go.* ./
 RUN go mod download
@@ -6,8 +6,9 @@ COPY . ./
 RUN go build -mod=readonly -v -o server
 
 
-FROM golang:1.16-buster as tailscale
+FROM golang:1.16.2-alpine3.13 as tailscale
 WORKDIR /go/src/tailscale
+RUN apk update && apk add git
 RUN git clone https://github.com/tailscale/tailscale.git && cd tailscale && go mod vendor && \
     rm wgengine/monitor/monitor_linux.go && \
     cat wgengine/monitor/monitor_polling.go | sed -e "s/+build .linux,/+build /" >wgengine/monitor/monitor_polling.go.new && \
@@ -21,13 +22,9 @@ RUN git clone https://github.com/tailscale/tailscale.git && cd tailscale && go m
 COPY . ./
 
 
-# Debian slim
-# https://hub.docker.com/_/debian
 # https://docs.docker.com/develop/develop-images/multistage-build/#use-multi-stage-builds
-FROM debian:buster-slim
-RUN set -x && apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates hostname && \
-    rm -rf /var/lib/apt/lists/*
+FROM alpine:latest
+RUN apk update && apk add ca-certificates && rm -rf /var/cache/apk/*
 
 
 # Copy binary to production image
