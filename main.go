@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	//"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,8 +10,9 @@ import (
 )
 
 func HandleRoot(w http.ResponseWriter, r *http.Request) {
-	// Access to '/' is not used in the actual appication, only for Google Cloud Run checking
-	// if we're alive. We delay the response so that Cloud Run will keep us active for a while.
+	// Access to '/' is not used in the actual appication, only for Google Cloud Run
+	// checking if we're alive. We delay the response so that Cloud Run will let us
+	// live a bit longer.
 	time.Sleep(2 * time.Second)
 }
 
@@ -43,15 +43,6 @@ func main() {
 
 	fmt.Println("Initializing OAuth server")
 	SetupOauth(mux)
-
-	//time.Sleep(5 * time.Second)
-	//for address, d := range devices {
-	//	b, err := json.MarshalIndent(d.ToIntentSyncResponse(), "", "  ")
-	//	if err != nil {
-	//		panic("json.Marshal failed")
-	//	}
-	//	fmt.Printf("%s = %s\n", address, string(b))
-	//}
 
 	log.Fatal(srv.ListenAndServe())
 }

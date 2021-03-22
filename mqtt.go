@@ -11,7 +11,7 @@ import (
 
 // Subset of Intent SYNC which we will send back to Google.
 // https://developers.google.com/assistant/smarthome/reference/intent/sync
-type IntentSyncResponse struct {
+type IntentSyncResponseDevice struct {
 	Id     string   `json:"id"`
 	Type   string   `json:"type"`
 	Traits []string `json:"traits"`
@@ -67,8 +67,8 @@ type TasmotaDevice struct {
 	HasOnOff     bool
 }
 
-func (device *TasmotaDevice) ToIntentSyncResponse() IntentSyncResponse {
-	var sync IntentSyncResponse
+func (device *TasmotaDevice) ToIntentSyncResponseDevice() IntentSyncResponseDevice {
+	var sync IntentSyncResponseDevice
 	sync.Id = device.MacAddress
 
 	if device.HasRelays {
