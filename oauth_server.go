@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"net/http"
+	"os"
 
 	"github.com/go-oauth2/oauth2/v4/errors"
 	"github.com/go-oauth2/oauth2/v4/manage"
@@ -15,12 +16,12 @@ func SetupOauth(mux *http.ServeMux) {
 	manager := manage.NewDefaultManager()
 	manager.MustTokenStorage(store.NewMemoryTokenStore())
 
-	// client memory store
 	clientStore := store.NewClientStore()
-	clientStore.Set("000000", &models.Client{
-		ID:     "000000",
-		Secret: "999999",
-		Domain: "http://localhost",
+	clientId := os.Getenv("OAUTH_CLIENT")
+	clientStore.Set(clientId, &models.Client{
+		ID:     clientId,
+		Secret: os.Getenv("OAUTH_SECRET"),
+		Domain: "https://oauth-redirect.googleusercontent.com",
 	})
 	manager.MapClientStorage(clientStore)
 
@@ -34,7 +35,12 @@ func SetupOauth(mux *http.ServeMux) {
 	})
 
 	srv.SetResponseErrorHandler(func(re *errors.Response) {
-		log.Println("Response Error:", re.Error.Error())
+		log.Printf("Response Error: Error=%v, Description=%v, URI=%v\n",
+			re.Error.Error(), re.Description, re.URI)
+	})
+
+	srv.SetUserAuthorizationHandler(func(w http.ResponseWriter, r *http.Request) (userID string, err error) {
+		return "123456", nil
 	})
 
 	mux.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
