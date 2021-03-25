@@ -21,6 +21,34 @@ type IntentSyncResponse struct {
 	} `json:"payload"`
 }
 
+// https://developers.google.com/assistant/smarthome/reference/intent/query
+type IntentQueryRequest struct {
+	RequestId string `json:"requestId"`
+	Inputs    []struct {
+		Intent  string `json:"intent"`
+		Payload struct {
+			Devices []struct {
+				Id         string      `json:"id"`
+				CustomData interface{} `json:"customData"`
+			} `json:"devices"`
+		} `json:"payload"`
+	} `json:"inputs"`
+}
+
+// https://developers.google.com/assistant/smarthome/reference/intent/query
+type IntentQueryResponse struct {
+	RequestId string `json:"requestId"`
+	Payload   struct {
+		ErrorCode   string `json:"errorCode,omitempty"`
+		DebugString string `json:"debugString,omitempty"`
+		Devices     []struct {
+			Id     string `json"id"`
+			Online bool   `json:"online"`
+			Status string `json:"status"`
+		} `json:"devices"`
+	} `json:"payload"`
+}
+
 func GenerateSyncResponse(req IntentSyncRequest) IntentSyncResponse {
 	var resp IntentSyncResponse
 	resp.RequestId = req.RequestId
@@ -48,9 +76,9 @@ func HandleFulfillment(w http.ResponseWriter, r *http.Request) {
 
 	var sync IntentSyncRequest
 	err := dec.Decode(&sync)
+	fmt.Printf("devices = %d\n", len(devices))
 	if err == nil && len(sync.Inputs) == 1 && sync.Inputs[0].Intent == "action.devices.SYNC" {
 		resp := GenerateSyncResponse(sync)
-		fmt.Printf("Sync response length = %d\n", len(resp.Payload.Devices))
 		w.Header().Set("Content-Type", "application/json")
 		body, err := json.Marshal(resp)
 		if err != nil {

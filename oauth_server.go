@@ -21,7 +21,7 @@ func SetupOauth(mux *http.ServeMux) {
 	clientStore.Set(clientId, &models.Client{
 		ID:     clientId,
 		Secret: os.Getenv("OAUTH_SECRET"),
-		Domain: "https://oauth-redirect.googleusercontent.com",
+		Domain: "https://oauth-redirect.googleusercontent.com/",
 	})
 	manager.MapClientStorage(clientStore)
 
@@ -40,6 +40,7 @@ func SetupOauth(mux *http.ServeMux) {
 	})
 
 	srv.SetUserAuthorizationHandler(func(w http.ResponseWriter, r *http.Request) (userID string, err error) {
+		// TODO: need to figure out the right thing to do here.
 		return "123456", nil
 	})
 

@@ -27,33 +27,6 @@ type IntentSyncResponseDevice struct {
 	} `json:"deviceInfo,omitempty"`
 }
 
-// https://developers.google.com/assistant/smarthome/reference/intent/query
-type IntentQueryRequest struct {
-	RequestId string `json:"requestId"`
-	Inputs    []struct {
-		Intent  string `json:"intent"`
-		Payload struct {
-			Devices map[string]struct {
-				Id string `json:"id"`
-			} `json:"devices"`
-		} `json:"payload"`
-	} `json:"inputs"`
-}
-
-// https://developers.google.com/assistant/smarthome/reference/intent/query
-type IntentQueryResponse struct {
-	RequestId string `json:"requestId"`
-	Payload   struct {
-		ErrorCode   string `json:"errorCode,omitempty"`
-		DebugString string `json:"debugString,omitempty"`
-		Devices     []struct {
-			Id     string `json"id"`
-			Online bool   `json:"online"`
-			Status string `json:"status"`
-		} `json:"devices"`
-	} `json:"payload"`
-}
-
 // State extracted from tasmota/discovery/*/config events, used to construct
 // a Smart Home Sync response
 type TasmotaDevice struct {
@@ -168,7 +141,8 @@ var connectLostHandler mqtt.ConnectionLostHandler = func(client mqtt.Client, err
 	fmt.Printf("Connect lost: %v", err)
 }
 
-func SetupMQTT() {
+func SubscribeMQTT() error {
+	// TODO: broker+port need to come from the environment.
 	var broker = "100.126.243.58"
 	var port = 1883
 	opts := mqtt.NewClientOptions()
@@ -180,12 +154,32 @@ func SetupMQTT() {
 	opts.OnConnect = connectHandler
 	opts.OnConnectionLost = connectLostHandler
 	client := mqtt.NewClient(opts)
-	for token := client.Connect(); token.Wait() && token.Error() != nil; {
-		time.Sleep(15 * time.Second)
+	token := client.Connect()
+	token.Wait()
+	if token.Error() != nil {
+		return token.Error()
 	}
 
 	topic := "tasmota/discovery/#"
-	token := client.Subscribe(topic, 1, nil)
+	token = client.Subscribe(topic, 1, nil)
 	token.Wait()
+	if token.Error() != nil {
+		return token.Error()
+	}
+
 	fmt.Printf("Subscribed to topic: %s\n", topic)
+
+	time.Sleep(5 * time.Second)
+	fmt.Println("MQTT Devices:")
+	for _, d := range devices {
+		fmt.Println(d)
+	}
+
+	return nil
+}
+
+func SetupMQTT() {
+	for SubscribeMQTT() != nil {
+		time.Sleep(1 * time.Second)
+	}
 }
