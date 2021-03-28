@@ -142,12 +142,10 @@ var connectLostHandler mqtt.ConnectionLostHandler = func(client mqtt.Client, err
 }
 
 func SubscribeMQTT() error {
-	// TODO: broker+port need to come from the environment.
-	var broker = "100.126.243.58"
-	var port = 1883
 	opts := mqtt.NewClientOptions()
-	opts.AddBroker(fmt.Sprintf("mqtt://%s:%d", broker, port))
-	opts.SetClientID("Google Assistant MQTT connector")
+	broker := fmt.Sprintf("mqtt://%s:%s", os.Getenv("MQTT_IP_ADDR"), os.Getenv("MQTT_PORT"))
+	opts.AddBroker(broker)
+	opts.SetClientID(AgentUserId)
 	opts.SetUsername(os.Getenv("MQTT_USERNAME"))
 	opts.SetPassword(os.Getenv("MQTT_PASSWORD"))
 	opts.SetDefaultPublishHandler(messagePubHandler)
