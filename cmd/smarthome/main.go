@@ -41,7 +41,7 @@ func main() {
 	mux.HandleFunc("/fulfillment", HandleFulfillment)
 
 	fmt.Println("Starting MQTT client")
-	go SetupMQTT()
+	go MQTT()
 
 	fmt.Println("Initializing OAuth server")
 	SetupOauth(mux)

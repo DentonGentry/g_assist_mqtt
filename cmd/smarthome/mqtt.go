@@ -2,11 +2,20 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"log"
+	"math/rand"
 	"os"
+	"strconv"
 	"strings"
 	"time"
+)
+
+const (
+	// MQTT QoS values
+	AtMostOnce  = 0
+	AtLeastOnce = 1
+	ExactlyOnce = 2
 )
 
 // Subset of Intent SYNC which we will send back to Google.
@@ -30,16 +39,22 @@ type IntentSyncResponseDevice struct {
 // State extracted from tasmota/discovery/*/config events, used to construct
 // a Smart Home Sync response
 type TasmotaDevice struct {
-	MacAddress   string
-	IP           string
-	FriendlyName string
-	Hostname     string
-	Hardware     string
-	Software     string
-	HasRelays    bool
-	HasOnOff     bool
+	MacAddress    string
+	IP            string
+	FriendlyName  string
+	Hostname      string
+	Hardware      string
+	Software      string
+	HasRelays     bool
+	HasOnOff      bool
+	TopicName     string
+	TopicPrefixes []string
 }
 
+var devices = make(map[string]TasmotaDevice)
+
+// Produce the Device portion of a Google Smart Home Sync Response
+// https://developers.google.com/assistant/smarthome/reference/intent/sync
 func (device *TasmotaDevice) ToIntentSyncResponseDevice() IntentSyncResponseDevice {
 	var sync IntentSyncResponseDevice
 	sync.Id = device.MacAddress
@@ -59,8 +74,6 @@ func (device *TasmotaDevice) ToIntentSyncResponseDevice() IntentSyncResponseDevi
 
 	return sync
 }
-
-var devices = make(map[string]TasmotaDevice)
 
 // Parse JSON received on tasmota/discovery/*/config
 // {"ip":"10.1.10.100",
@@ -87,7 +100,8 @@ var devices = make(map[string]TasmotaDevice)
 //  "lt_st":0,
 //  "sho":[0,0,0,0],
 //  "ver":1}
-func ParseDeviceDiscovery(jsonStr []byte) (TasmotaDevice, error) {
+// as described in https://github.com/arendst/Tasmota/issues/9267
+func ParseTasmotaDiscovery(jsonStr []byte) (TasmotaDevice, error) {
 	var device TasmotaDevice
 
 	jsonMap := make(map[string]interface{})
@@ -119,65 +133,164 @@ func ParseDeviceDiscovery(jsonStr []byte) (TasmotaDevice, error) {
 		}
 	}
 
+	device.TopicName = jsonMap["t"].(string)
+	for _, i := range jsonMap["tp"].([]interface{}) {
+		prefix := i.(string)
+		device.TopicPrefixes = append(device.TopicPrefixes, prefix)
+	}
+
 	return device, nil
 }
 
-var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {
+// Call for MQTT messages arriving on /tasmota/discovery/#
+func TasmotaDiscoveryMessageHandler(client mqtt.Client, msg mqtt.Message) {
 	t := strings.Split(msg.Topic(), "/")
-	if len(t) == 4 && t[0] == "tasmota" && t[1] == "discovery" && t[3] == "config" {
-		address := t[2]
-		device, err := ParseDeviceDiscovery(msg.Payload())
-		if err == nil {
-			devices[address] = device
+	if len(t) != 4 || t[0] != "tasmota" || t[1] != "discovery" {
+		log.Println("TasmotaDiscovery unknown topic: " + msg.Topic())
+		return
+	}
+
+	address := t[2]
+	if t[3] != "config" {
+		// we don't process "/tasmota/discovery/*/sensors" yet
+		return
+	}
+
+	device, err := ParseTasmotaDiscovery(msg.Payload())
+	if err == nil {
+		devices[address] = device
+
+		// Subscribe to the device's topics right away
+		topics := make(map[string]byte)
+		for _, prefix := range device.TopicPrefixes {
+			if prefix != "stat" && prefix != "tele" {
+				continue // no need to subscribe to command channel etc
+			}
+			topic := "/" + prefix + "/" + device.TopicName + "/#"
+			topics[topic] = AtLeastOnce
+		}
+		token := client.SubscribeMultiple(topics,
+			func(client mqtt.Client, msg mqtt.Message) {
+				m := SerializedMessage{"StateMessageHandler", client, msg}
+				serializedMessageCh <- m
+			})
+		go func() {
+			_ = token.Wait()
+			if token.Error() != nil {
+				log.Printf("subscribe %s=%v", device.TopicName, token.Error())
+			}
+		}()
+	}
+}
+
+// handles /stat/device-topic/RESULT and /tele/device-topic/STATE messages
+// serialized through SerializeMessageHandler
+//
+// Example (both topics send the same message format):
+// {"Time":"2021-03-28T14:46:16","Uptime":"21T16:41:40","UptimeSec":1874500,"Heap":29,
+//  "SleepMode":"Dynamic","Sleep":50,"LoadAvg":19,"MqttCount":20,"POWER":"OFF",
+//  "Wifi":{"AP":2,"SSId":"MY-SSID","BSSId":"00:11:22:33:44:55","Channel":1,"RSSI":44,
+//          "Signal":-78,"LinkCount":17,"Downtime":"0T00:05:18"}}
+func StateMessageHandler(client mqtt.Client, msg mqtt.Message) {
+	t := strings.Split(msg.Topic(), "/")
+	if len(t) < 3 {
+		log.Println("MQTT State handler: unknown topic: " + msg.Topic())
+		return
+	}
+	log.Println("MQTT State handler: " + msg.Topic())
+}
+
+type SerializedMessage struct {
+	handler string
+	client  mqtt.Client
+	msg     mqtt.Message
+}
+
+var serializedMessageCh chan SerializedMessage
+
+// MQTT uses a goroutine per incoming message. Handling anything which needs to
+// access the devices map would either require locking, or to serialize reception
+// to one goroutine. We've chosen to do that: this routine pulls messages from
+// a channel to be processwed one by one.
+func SerializeMessageHandler() {
+	for {
+		m := <-serializedMessageCh
+		if m.handler == "StateMessageHandler" {
+			StateMessageHandler(m.client, m.msg)
+		} else if m.handler == "TasmotaDiscoveryMessageHandler" {
+			TasmotaDiscoveryMessageHandler(m.client, m.msg)
 		}
 	}
 }
 
-var connectHandler mqtt.OnConnectHandler = func(client mqtt.Client) {
-	fmt.Println("Connected")
+func DefaultMessageHandler(client mqtt.Client, msg mqtt.Message) {
+	log.Println("DefaultMessageHandler unexpected topic: " + msg.Topic())
 }
 
-var connectLostHandler mqtt.ConnectionLostHandler = func(client mqtt.Client, err error) {
-	fmt.Printf("Connect lost: %v", err)
+func OnConnectHandler(client mqtt.Client) {
+	log.Println("MQTT Connected")
 }
 
-func SubscribeMQTT() error {
+func ConnectionLostHandler(client mqtt.Client, err error) {
+	log.Printf("MQTT connection lost: %v", err)
+}
+
+func ConnectToMQTT() (client mqtt.Client, err error) {
 	opts := mqtt.NewClientOptions()
-	broker := fmt.Sprintf("mqtt://%s:%s", os.Getenv("MQTT_IP_ADDR"), os.Getenv("MQTT_PORT"))
+	broker := "mqtt://" + os.Getenv("MQTT_IP_ADDR") + ":" + os.Getenv("MQTT_PORT")
 	opts.AddBroker(broker)
-	opts.SetClientID(AgentUserId)
+	// Only one client with the same ID can connect, add a random slug at end
+	opts.SetClientID(AgentUserId + ":" + strconv.FormatUint(rand.Uint64(), 32))
+	opts.SetOrderMatters(false)
 	opts.SetUsername(os.Getenv("MQTT_USERNAME"))
 	opts.SetPassword(os.Getenv("MQTT_PASSWORD"))
-	opts.SetDefaultPublishHandler(messagePubHandler)
-	opts.OnConnect = connectHandler
-	opts.OnConnectionLost = connectLostHandler
-	client := mqtt.NewClient(opts)
+	opts.SetDefaultPublishHandler(DefaultMessageHandler)
+	opts.OnConnect = OnConnectHandler
+	opts.OnConnectionLost = ConnectionLostHandler
+	client = mqtt.NewClient(opts)
 	token := client.Connect()
 	token.Wait()
 	if token.Error() != nil {
-		return token.Error()
+		return client, token.Error()
 	}
 
-	topic := "tasmota/discovery/#"
-	token = client.Subscribe(topic, 1, nil)
-	token.Wait()
-	if token.Error() != nil {
-		return token.Error()
-	}
-
-	fmt.Printf("Subscribed to topic: %s\n", topic)
-
-	time.Sleep(5 * time.Second)
-	fmt.Println("MQTT Devices:")
-	for _, d := range devices {
-		fmt.Println(d)
-	}
-
-	return nil
+	return client, nil
 }
 
-func SetupMQTT() {
-	for SubscribeMQTT() != nil {
+func MQTT() {
+	mqtt.ERROR = log.New(os.Stdout, "[MQTT ERROR] ", 0)
+	mqtt.CRITICAL = log.New(os.Stdout, "[MQTT CRIT] ", 0)
+	mqtt.WARN = log.New(os.Stdout, "[MQTT WARN]  ", 0)
+	//mqtt.DEBUG = log.New(os.Stdout, "[MQTT DEBUG] ", 0) // quite verbose
+
+	serializedMessageCh = make(chan SerializedMessage, 100)
+	go SerializeMessageHandler()
+
+	var client mqtt.Client
+	var err error
+	for client, err = ConnectToMQTT(); err != nil; {
 		time.Sleep(1 * time.Second)
 	}
+
+	for {
+		token := client.Subscribe("tasmota/discovery/#", AtLeastOnce,
+			func(client mqtt.Client, msg mqtt.Message) {
+				m := SerializedMessage{"TasmotaDiscoveryMessageHandler",
+					client, msg}
+				serializedMessageCh <- m
+			})
+		token.Wait()
+		if token.Error() == nil {
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
+	log.Printf("Subscribed to Tasmota Discovery Protocol")
+
+	time.Sleep(5 * time.Second)
+	log.Println("MQTT Devices:")
+	for _, d := range devices {
+		log.Println(d)
+	}
+
 }
