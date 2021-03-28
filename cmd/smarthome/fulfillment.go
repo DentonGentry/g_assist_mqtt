@@ -109,13 +109,18 @@ type IntentExecuteResponse struct {
 }
 
 func HandleFulfillment(w http.ResponseWriter, r *http.Request) {
-	// TODO: check JWT token here.
+	ok, errorStr := ValidateJWT(r)
+	if !ok {
+		http.Error(w, errorStr, http.StatusUnauthorized)
+		return
+	}
 
 	version, ok := r.Header["google-assistant-api-version"]
 	if ok {
 		if len(version) != 1 || version[0] != "v1" {
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte("500 error, unimplemented version: " + version[0]))
+			errorStr = "500 error, unimplemented version: " + version[0]
+			http.Error(w, errorStr, http.StatusInternalServerError)
+			return
 		}
 	}
 

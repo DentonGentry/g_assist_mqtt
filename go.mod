@@ -7,6 +7,7 @@ require (
 	git.apache.org/thrift.git v0.0.0-20181218151757-9b75e4fe745a // indirect
 	github.com/aws/aws-sdk-go v1.38.1 // indirect
 	github.com/census-instrumentation/opencensus-proto v0.3.0 // indirect
+	github.com/dgrijalva/jwt-go v3.2.0+incompatible // indirect
 	github.com/eclipse/paho.mqtt.golang v1.3.2
 	github.com/ghodss/yaml v1.0.0 // indirect
 	github.com/go-ini/ini v1.25.4 // indirect
