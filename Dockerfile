@@ -3,7 +3,7 @@ WORKDIR /app
 COPY go.* ./
 RUN go mod download
 COPY . ./
-RUN go build -mod=readonly -v -o server
+RUN go build -mod=readonly -v ./...
 
 
 FROM golang:1.16.2-alpine3.13 as tailscale
@@ -29,7 +29,7 @@ FROM alpine:latest
 RUN apk update && apk add ca-certificates && rm -rf /var/cache/apk/*
 
 # Copy binary to production image
-COPY --from=builder /app/server /app/server
+COPY --from=builder /app/smarthome /app/smarthome
 COPY --from=builder /app/start.sh /app/start.sh
 COPY --from=tailscale /go/bin/tailscaled /app/tailscaled
 COPY --from=tailscale /go/bin/tailscale /app/tailscale
