@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 )
 
+// -----------------------------------------------------------------------------
+
+// https://developers.google.com/assistant/smarthome/reference/intent/sync
 type IntentSyncRequest struct {
 	RequestId string `json:"requestId"`
 	Inputs    []struct {
@@ -21,6 +23,19 @@ type IntentSyncResponse struct {
 	} `json:"payload"`
 }
 
+func GenerateSyncResponse(req IntentSyncRequest) IntentSyncResponse {
+	var resp IntentSyncResponse
+	resp.RequestId = req.RequestId
+	resp.Payload.AgentUserId = AgentUserId
+	for _, d := range devices {
+		resp.Payload.Devices = append(resp.Payload.Devices, d.ToIntentSyncResponseDevice())
+	}
+
+	return resp
+}
+
+// -----------------------------------------------------------------------------
+
 // https://developers.google.com/assistant/smarthome/reference/intent/query
 type IntentQueryRequest struct {
 	RequestId string `json:"requestId"`
@@ -29,7 +44,7 @@ type IntentQueryRequest struct {
 		Payload struct {
 			Devices []struct {
 				Id         string      `json:"id"`
-				CustomData interface{} `json:"customData"`
+				CustomData interface{} `json:"customData,omitempty"`
 			} `json:"devices"`
 		} `json:"payload"`
 	} `json:"inputs"`
@@ -49,15 +64,48 @@ type IntentQueryResponse struct {
 	} `json:"payload"`
 }
 
-func GenerateSyncResponse(req IntentSyncRequest) IntentSyncResponse {
-	var resp IntentSyncResponse
+func GenerateQueryResponse(req IntentQueryRequest) IntentQueryResponse {
+	var resp IntentQueryResponse
 	resp.RequestId = req.RequestId
-	resp.Payload.AgentUserId = "my-app"
-	for _, d := range devices {
-		resp.Payload.Devices = append(resp.Payload.Devices, d.ToIntentSyncResponseDevice())
+
+	for _ = range req.Inputs[0].Payload.Devices {
+
 	}
 
 	return resp
+}
+
+// -----------------------------------------------------------------------------
+
+// https://developers.google.com/assistant/smarthome/reference/intent/execute
+type IntentExecuteRequest struct {
+	RequestId string `json:"requestId"`
+	Inputs    []struct {
+		Intent  string `json:"intent"`
+		Payload struct {
+			Devices []struct {
+				Id         string      `json:"id"`
+				CustomData interface{} `json:"customData,omitempty"`
+			} `json:"devices"`
+			Execution []struct {
+				Command string      `json:"command"`
+				Params  interface{} `json:"params"`
+			} `json:"execution"`
+		} `json:"payload"`
+	} `json:"inputs"`
+}
+
+// https://developers.google.com/assistant/smarthome/reference/intent/execute
+type IntentExecuteResponse struct {
+	RequestId string `json:"requestId"`
+	Payload   struct {
+		Commands []struct {
+			Ids       []string    `json"ids"`
+			Status    string      `json:"status"`
+			States    interface{} `json:"states,omitempty"`
+			ErrorCode string      `json:"errorCode,omitempty"`
+		} `json:"commands"`
+	} `json:"payload"`
 }
 
 func HandleFulfillment(w http.ResponseWriter, r *http.Request) {
@@ -76,7 +124,6 @@ func HandleFulfillment(w http.ResponseWriter, r *http.Request) {
 
 	var sync IntentSyncRequest
 	err := dec.Decode(&sync)
-	fmt.Printf("devices = %d\n", len(devices))
 	if err == nil && len(sync.Inputs) == 1 && sync.Inputs[0].Intent == "action.devices.SYNC" {
 		resp := GenerateSyncResponse(sync)
 		w.Header().Set("Content-Type", "application/json")
@@ -86,5 +133,11 @@ func HandleFulfillment(w http.ResponseWriter, r *http.Request) {
 			body = []byte("500 error, JSON serialization failed")
 		}
 		w.Write(body)
+		return
+	}
+
+	var query IntentQueryRequest
+	err = dec.Decode(&query)
+	if err == nil && sync.Inputs[0].Intent == "action.devices.QUERY" {
 	}
 }

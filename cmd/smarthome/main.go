@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const AgentUserId = string("https://github.com/DentonGentry/g_assist_mqtt.git")
+
 func HandleRoot(w http.ResponseWriter, r *http.Request) {
 	// Access to '/' is not used in the actual appication, only for Google Cloud Run
 	// checking if we're alive. We delay the response so that Cloud Run will let us
