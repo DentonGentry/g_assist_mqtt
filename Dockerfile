@@ -8,6 +8,7 @@ RUN go build -mod=readonly -v -o server
 
 FROM golang:1.16.2-alpine3.13 as tailscale
 WORKDIR /go/src/tailscale
+COPY . ./
 RUN apk update && apk add git
 RUN git clone https://github.com/tailscale/tailscale.git && cd tailscale && go mod vendor && \
     rm wgengine/monitor/monitor_linux.go && \
@@ -16,16 +17,16 @@ RUN git clone https://github.com/tailscale/tailscale.git && cd tailscale && go m
     rm vendor/github.com/tailscale/wireguard-go/device/sticky_linux.go && \
     cat vendor/github.com/tailscale/wireguard-go/device/sticky_default.go | sed -e "s/+build .linux,/+build /" >vendor/github.com/tailscale/wireguard-go/device/sticky_default.go.new && \
     mv vendor/github.com/tailscale/wireguard-go/device/sticky_default.go.new vendor/github.com/tailscale/wireguard-go/device/sticky_default.go && \
-    cat net/netns/netns_linux.go | sed -e "s|sockErr = bindToDevice|//sockErr = bindToDevice|" >net/netns/netns_linux.go.new && \
-    mv net/netns/netns_linux.go.new net/netns/netns_linux.go && \
-    go install -mod=readonly ./cmd/tailscaled ./cmd/tailscale
+    cp ../interfaces_linux.new net/interfaces/interfaces_linux.go && \
+    cp ../interfaces.new net/interfaces/interfaces.go && \
+    cp ../device.new vendor/github.com/tailscale/wireguard-go/device/device.go && \
+    go install -mod=vendor ./cmd/tailscaled ./cmd/tailscale
 COPY . ./
 
 
 # https://docs.docker.com/develop/develop-images/multistage-build/#use-multi-stage-builds
 FROM alpine:latest
 RUN apk update && apk add ca-certificates && rm -rf /var/cache/apk/*
-
 
 # Copy binary to production image
 COPY --from=builder /app/server /app/server
