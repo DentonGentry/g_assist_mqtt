@@ -171,8 +171,8 @@ func TasmotaDiscoveryMessageHandler(client mqtt.Client, msg mqtt.Message) {
 		}
 		token := client.SubscribeMultiple(topics,
 			func(client mqtt.Client, msg mqtt.Message) {
-				m := SerializedMessage{"StateMessageHandler", client, msg}
-				serializedMessageCh <- m
+				m := SerializedRcvMsg{"StateMessageHandler", msg}
+				serializedRcvMsgCh <- m
 			})
 		go func() {
 			_ = token.Wait()
@@ -184,7 +184,7 @@ func TasmotaDiscoveryMessageHandler(client mqtt.Client, msg mqtt.Message) {
 }
 
 // handles /stat/device-topic/RESULT and /tele/device-topic/STATE messages
-// serialized through SerializeMessageHandler
+// serialized through SerializeDevicesFunc
 //
 // Example (both topics send the same message format):
 // {"Time":"2021-03-28T14:46:16","Uptime":"21T16:41:40","UptimeSec":1874500,"Heap":29,
@@ -200,27 +200,62 @@ func StateMessageHandler(client mqtt.Client, msg mqtt.Message) {
 	log.Println("MQTT State handler: " + msg.Topic())
 }
 
-type SerializedMessage struct {
+type SerializedRcvMsg struct {
 	handler string
-	client  mqtt.Client
 	msg     mqtt.Message
 }
+type SerializedQuery struct {
+	Id string
+}
 
-var serializedMessageCh chan SerializedMessage
+var serializedRcvMsgCh chan SerializedRcvMsg
+var serializedQueryCh chan SerializedQuery
 
 // MQTT uses a goroutine per incoming message. Handling anything which needs to
 // access the devices map would either require locking, or to serialize reception
 // to one goroutine. We've chosen to do that: this routine pulls messages from
 // a channel to be processwed one by one.
-func SerializeMessageHandler() {
+func SerializeDevicesFunc(client mqtt.Client) {
 	for {
-		m := <-serializedMessageCh
-		if m.handler == "StateMessageHandler" {
-			StateMessageHandler(m.client, m.msg)
-		} else if m.handler == "TasmotaDiscoveryMessageHandler" {
-			TasmotaDiscoveryMessageHandler(m.client, m.msg)
+		select {
+		case m := <-serializedRcvMsgCh:
+			serializeReceive(client, m)
+		case q := <-serializedQueryCh:
+			serializePublish(client, q)
 		}
 	}
+}
+
+func serializeReceive(client mqtt.Client, m SerializedRcvMsg) {
+	if m.handler == "StateMessageHandler" {
+		StateMessageHandler(client, m.msg)
+	} else if m.handler == "TasmotaDiscoveryMessageHandler" {
+		TasmotaDiscoveryMessageHandler(client, m.msg)
+	}
+}
+
+func serializePublish(client mqtt.Client, q SerializedQuery) {
+	d, ok := devices[q.Id]
+	if !ok {
+		log.Println("serializePublish: unknown Device: " + q.Id)
+		return
+	}
+
+	topic := "/cmnd/" + d.TopicName + "/STATE"
+	retained := false
+	log.Println("Publishing to " + topic)
+	token := client.Publish(topic, AtLeastOnce, retained, "")
+	go func() {
+		_ = token.Wait()
+		if token.Error() != nil {
+			return
+		}
+	}()
+}
+
+func DeviceQuery(Id string, Text string) {
+	q := SerializedQuery{Id}
+	serializedQueryCh <- q
 }
 
 func DefaultMessageHandler(client mqtt.Client, msg mqtt.Message) {
@@ -263,21 +298,21 @@ func MQTT() {
 	mqtt.WARN = log.New(os.Stdout, "[MQTT WARN]  ", 0)
 	//mqtt.DEBUG = log.New(os.Stdout, "[MQTT DEBUG] ", 0) // quite verbose
 
-	serializedMessageCh = make(chan SerializedMessage, 100)
-	go SerializeMessageHandler()
-
 	var client mqtt.Client
 	var err error
 	for client, err = ConnectToMQTT(); err != nil; {
 		time.Sleep(1 * time.Second)
 	}
 
+	serializedRcvMsgCh = make(chan SerializedRcvMsg, 100)
+	serializedQueryCh = make(chan SerializedQuery, 100)
+	go SerializeDevicesFunc(client)
+
 	for {
 		token := client.Subscribe("tasmota/discovery/#", AtLeastOnce,
 			func(client mqtt.Client, msg mqtt.Message) {
-				m := SerializedMessage{"TasmotaDiscoveryMessageHandler",
-					client, msg}
-				serializedMessageCh <- m
+				m := SerializedRcvMsg{"TasmotaDiscoveryMessageHandler", msg}
+				serializedRcvMsgCh <- m
 			})
 		token.Wait()
 		if token.Error() == nil {

@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"io/ioutil"
+	"log"
 	"net/http"
 )
 
@@ -68,8 +71,8 @@ func GenerateQueryResponse(req IntentQueryRequest) IntentQueryResponse {
 	var resp IntentQueryResponse
 	resp.RequestId = req.RequestId
 
-	for _ = range req.Inputs[0].Payload.Devices {
-
+	for _, d := range req.Inputs[0].Payload.Devices {
+		DeviceQuery(d.Id, "")
 	}
 
 	return resp
@@ -109,6 +112,7 @@ type IntentExecuteResponse struct {
 }
 
 func HandleFulfillment(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
 	ok, errorStr := ValidateJWT(r)
 	if !ok {
 		http.Error(w, errorStr, http.StatusUnauthorized)
@@ -124,11 +128,14 @@ func HandleFulfillment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
+	data, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "500 error, cannot read body", http.StatusInternalServerError)
+	}
+	log.Println("fulfillment: " + string(data))
 
 	var sync IntentSyncRequest
-	err := dec.Decode(&sync)
+	err = json.NewDecoder(bytes.NewReader(data)).Decode(&sync)
 	if err == nil && len(sync.Inputs) == 1 && sync.Inputs[0].Intent == "action.devices.SYNC" {
 		resp := GenerateSyncResponse(sync)
 		w.Header().Set("Content-Type", "application/json")
@@ -142,7 +149,16 @@ func HandleFulfillment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var query IntentQueryRequest
-	err = dec.Decode(&query)
-	if err == nil && sync.Inputs[0].Intent == "action.devices.QUERY" {
+	err = json.NewDecoder(bytes.NewReader(data)).Decode(&query)
+	if err == nil && len(query.Inputs) > 0 && query.Inputs[0].Intent == "action.devices.QUERY" {
+		resp := GenerateQueryResponse(query)
+		w.Header().Set("Content-Type", "application/json")
+		body, err := json.Marshal(resp)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			body = []byte("500 error, JSON serialization failed")
+		}
+		w.Write(body)
+		return
 	}
 }
