@@ -14,12 +14,6 @@ RUN git clone https://github.com/tailscale/tailscale.git && cd tailscale && go m
     rm wgengine/monitor/monitor_linux.go && \
     cat wgengine/monitor/monitor_polling.go | sed -e "s/+build .linux,/+build /" >wgengine/monitor/monitor_polling.go.new && \
     mv wgengine/monitor/monitor_polling.go.new wgengine/monitor/monitor_polling.go && \
-    rm vendor/github.com/tailscale/wireguard-go/device/sticky_linux.go && \
-    cat vendor/github.com/tailscale/wireguard-go/device/sticky_default.go | sed -e "s/+build .linux,/+build /" >vendor/github.com/tailscale/wireguard-go/device/sticky_default.go.new && \
-    mv vendor/github.com/tailscale/wireguard-go/device/sticky_default.go.new vendor/github.com/tailscale/wireguard-go/device/sticky_default.go && \
-    cp ../interfaces_linux.new net/interfaces/interfaces_linux.go && \
-    cp ../interfaces.new net/interfaces/interfaces.go && \
-    cp ../device.new vendor/github.com/tailscale/wireguard-go/device/device.go && \
     go install -mod=vendor ./cmd/tailscaled ./cmd/tailscale
 COPY . ./
 
