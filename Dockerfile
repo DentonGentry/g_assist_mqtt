@@ -10,11 +10,8 @@ FROM golang:1.16.2-alpine3.13 as tailscale
 WORKDIR /go/src/tailscale
 COPY . ./
 RUN apk update && apk add git
-RUN git clone https://github.com/tailscale/tailscale.git && cd tailscale && go mod vendor && \
-    rm wgengine/monitor/monitor_linux.go && \
-    cat wgengine/monitor/monitor_polling.go | sed -e "s/+build .linux,/+build /" >wgengine/monitor/monitor_polling.go.new && \
-    mv wgengine/monitor/monitor_polling.go.new wgengine/monitor/monitor_polling.go && \
-    go install -mod=vendor ./cmd/tailscaled ./cmd/tailscale
+RUN git clone https://github.com/tailscale/tailscale.git && cd tailscale && go mod download && \
+    go install -mod=readonly ./cmd/tailscaled ./cmd/tailscale
 COPY . ./
 
 
