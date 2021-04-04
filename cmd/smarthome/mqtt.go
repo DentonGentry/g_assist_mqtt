@@ -100,7 +100,7 @@ func (device *TasmotaDevice) SendExecute(On bool) {
 		state = "OFF"
 	}
 
-	topic := "/cmnd/" + device.TopicName + "/STATE"
+	topic := "cmnd/" + device.TopicName + "/power"
 	retained := false
 	log.Println("Publishing to " + topic)
 	token := client.Publish(topic, ExactlyOnce, retained, state)

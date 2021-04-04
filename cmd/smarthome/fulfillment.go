@@ -115,25 +115,42 @@ func GenerateQueryResponse(req IntentQueryRequest) IntentQueryResponse {
 // -----------------------------------------------------------------------------
 
 // https://developers.google.com/assistant/smarthome/reference/intent/execute
+// Example:
+// {"inputs":[
+//	{"context":{"locale_country":"US","locale_language":"en"},
+//	"intent":"action.devices.EXECUTE",
+//	"payload":{"commands":[
+//	    {"devices":[{"id":"840D8E5D7FCF"}],
+//	    "execution":[
+//		{"command":"action.devices.commands.OnOff",
+//		"params":{"on":false}}]}]}}],
+//  "requestId":"3109023582895760782"}
 type IntentExecuteRequest struct {
 	RequestId string `json:"requestId"`
 	Inputs    []struct {
+		Context struct {
+			LocaleCountry  string `json:"locale_country,omitempty"`
+			LocaleLanguage string `json:"locale_language,omitempty"`
+		} `json:"context"`
 		Intent  string `json:"intent"`
 		Payload struct {
-			Devices []struct {
-				Id string `json:"id"`
-			} `json:"devices"`
-			Execution []struct {
-				Command string `json:"command"`
-				Params  struct {
-					On bool `json:"on,omitempty"`
-				} `json:"params"`
-			} `json:"execution"`
+			Commands []struct {
+				Devices []struct {
+					Id string `json:"id"`
+				} `json:"devices"`
+				Execution []struct {
+					Command string `json:"command"`
+					Params  struct {
+						On bool `json:"on,omitempty"`
+					} `json:"params"`
+				} `json:"execution"`
+			} `json:"commands"`
 		} `json:"payload"`
 	} `json:"inputs"`
 }
 
 // https://developers.google.com/assistant/smarthome/reference/intent/execute
+// but supplemented with undocumented fields that Google sends like Context.
 type IntentExecuteResponse struct {
 	RequestId string `json:"requestId"`
 	Payload   struct {
@@ -157,12 +174,12 @@ func GenerateExecuteResponse(req IntentExecuteRequest) IntentExecuteResponse {
 	var resp IntentExecuteResponse
 	resp.RequestId = req.RequestId
 
-	if len(req.Inputs[0].Payload.Execution) != 1 {
-		resp.Payload.ErrorCode = "Only one Execute block is implemented"
+	if len(req.Inputs[0].Payload.Commands[0].Execution) != 1 {
+		resp.Payload.ErrorCode = "Only Execution length 1 implemented"
 		return resp
 	}
 
-	exe := req.Inputs[0].Payload.Execution[0]
+	exe := req.Inputs[0].Payload.Commands[0].Execution[0]
 	var On bool
 	if exe.Command == "action.devices.commands.OnOff" {
 		if exe.Params.On {
@@ -177,7 +194,7 @@ func GenerateExecuteResponse(req IntentExecuteRequest) IntentExecuteResponse {
 
 	deviceLock.Lock()
 	defer deviceLock.Unlock()
-	for _, x := range req.Inputs[0].Payload.Devices {
+	for _, x := range req.Inputs[0].Payload.Commands[0].Devices {
 		var cmd IntentExecuteResponseCommand
 		cmd.Ids = append(cmd.Ids, x.Id)
 		d, ok := devices[x.Id]
@@ -185,6 +202,7 @@ func GenerateExecuteResponse(req IntentExecuteRequest) IntentExecuteResponse {
 			cmd.Status = "OFFLINE"
 			cmd.States.Online = false
 		} else {
+			log.Printf("Calling SendExecute for %s\n", x.Id)
 			d.SendExecute(On)
 			cmd.Status = "ONLINE"
 			cmd.States.On = On
@@ -252,8 +270,9 @@ func HandleFulfillment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var execute IntentExecuteRequest
-	err = json.NewDecoder(bytes.NewReader(data)).Decode(&query)
+	err = json.NewDecoder(bytes.NewReader(data)).Decode(&execute)
 	if err == nil && len(execute.Inputs) > 0 && execute.Inputs[0].Intent == "action.devices.EXECUTE" {
+		log.Println("Calling GenerateExecuteResponse")
 		resp := GenerateExecuteResponse(execute)
 		w.Header().Set("Content-Type", "application/json")
 		body, err := json.Marshal(resp)
