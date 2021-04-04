@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/dgrijalva/jwt-go"
 	"github.com/go-oauth2/oauth2/v4/errors"
@@ -47,6 +48,8 @@ func SetupOauth(mux *http.ServeMux) {
 	manager := manage.NewDefaultManager()
 	manager.MustTokenStorage(store.NewMemoryTokenStore())
 
+	// We only have one OAuth client to populate, used by Google Smart Home
+	// for https://developers.google.com/assistant/smarthome/overview
 	clientStore := store.NewClientStore()
 	clientId := os.Getenv("OAUTH_CLIENT")
 	clientStore.Set(clientId, &models.Client{
@@ -56,9 +59,29 @@ func SetupOauth(mux *http.ServeMux) {
 	})
 	manager.MapClientStorage(clientStore)
 
+	// Running in Cloud Run, we'd like to allow Smart Home to authenticate once and
+	// get a token from one of our instances, and be able to use that token with any
+	// running instance. We'd have to run a central DB somewhere to store sessions,
+	// Firebase maybe, but instead we use JWT to make out tokens using a secret
+	// which Cloud Run passes in from the environment. https://jwt.io/
+	// Any of our instances can validate the token created by any other instance.
 	jwt_key := []byte(os.Getenv("OAUTH_JWT_KEY"))
 	manager.MapAccessGenerate(generates.NewJWTAccessGenerate("", jwt_key,
 		jwt.SigningMethodHS512))
+
+	// Our interactions with users are in the form of smart home commands like
+	// turning lights on. We'd like to minimize the latency from the time when the
+	// user says "turn the light on" until the light turns on, so let the Access
+	// Token live a long time to not spend round trips to refresh it.
+	// Note that Google's server-side code discards this token well before the long
+	// expiration time we give here. We just don't want to be the limit.
+	manager.SetAuthorizeCodeExp(time.Minute * 10)
+	cfg := &manage.Config{
+		AccessTokenExp:    time.Hour * 24 * 7,
+		RefreshTokenExp:   time.Hour * 24 * 7,
+		IsGenerateRefresh: true,
+	}
+	manager.SetAuthorizeCodeTokenCfg(cfg)
 
 	srv := server.NewDefaultServer(manager)
 	srv.SetAllowGetAccessRequest(true)
@@ -74,18 +97,20 @@ func SetupOauth(mux *http.ServeMux) {
 			re.Error.Error(), re.Description, re.URI)
 	})
 
-	srv.SetUserAuthorizationHandler(func(w http.ResponseWriter, r *http.Request) (userID string, err error) {
-		// TODO: need to figure out the right thing to do here.
-		return "123456", nil
-	})
+	// We don't want to spin up a shared session database like Firebase, and we only
+	// have one OAuth client which only has one user. Return that user, always.
+	srv.SetUserAuthorizationHandler(
+		func(w http.ResponseWriter, r *http.Request) (userID string, err error) {
+			return "google_smart_home", nil
+		})
 
+	// instantiate handlers on our HTTP server
 	mux.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
 		err := srv.HandleAuthorizeRequest(w, r)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 		}
 	})
-
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
 		srv.HandleTokenRequest(w, r)
 	})
