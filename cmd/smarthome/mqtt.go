@@ -37,6 +37,7 @@ type TasmotaDevice struct {
 var client mqtt.Client
 var devices = make(map[string]TasmotaDevice)
 var deviceLock sync.Mutex
+var readyCh chan int
 
 // Produce the Device portion of a Google Smart Home Sync Response
 // https://developers.google.com/assistant/smarthome/reference/intent/sync
@@ -80,7 +81,6 @@ func (device *TasmotaDevice) ToIntentQueryResponseDevice() IntentQueryResponseDe
 func (device *TasmotaDevice) SendQuery(Text string) {
 	topic := "/cmnd/" + device.TopicName + "/STATE"
 	retained := false
-	log.Println("Publishing to " + topic)
 	token := client.Publish(topic, AtLeastOnce, retained, "")
 	go func() {
 		_ = token.Wait()
@@ -102,7 +102,6 @@ func (device *TasmotaDevice) SendPowerOnOff(On bool) {
 
 	topic := "cmnd/" + device.TopicName + "/power"
 	retained := false
-	log.Println("Publishing to " + topic)
 	token := client.Publish(topic, ExactlyOnce, retained, state)
 	go func() {
 		_ = token.Wait()
@@ -212,6 +211,9 @@ func mqttMessageHandler(client mqtt.Client, msg mqtt.Message) {
 			return
 		}
 		devices[address] = device
+
+		// fetch current state immediately
+		device.SendQuery("")
 	} else if len(t) >= 3 && ((t[0] == "stat" && t[2] == "RESULT") || (t[0] == "tele" && t[2] == "STATE")) {
 		address := t[1]
 		device, ok := devices[address]
@@ -225,6 +227,10 @@ func mqttMessageHandler(client mqtt.Client, msg mqtt.Message) {
 		} else {
 			// a device we are ignoring
 		}
+	} else if len(t) == 3 && t[0] == "tmp" && t[2] == "READY" {
+		// This is our own message, sent during init and intended as a signal
+		// that we've received all retained messages on other topics.
+		readyCh <- 1
 	}
 }
 
@@ -244,12 +250,12 @@ func ConnectionLostHandler(client mqtt.Client, err error) {
 }
 
 // Make one attempt to connect to the MQTT broker. Expected to be called from a loop.
-func ConnectToMQTT() (client mqtt.Client, err error) {
+func ConnectToMQTT(slug string) (client mqtt.Client, err error) {
 	opts := mqtt.NewClientOptions()
 	broker := "mqtt://" + os.Getenv("MQTT_IP_ADDR") + ":" + os.Getenv("MQTT_PORT")
 	opts.AddBroker(broker)
 	// Only one client with the same ID can connect, add a random slug at end
-	opts.SetClientID(AgentUserId + ":" + strconv.FormatUint(rand.Uint64(), 32))
+	opts.SetClientID(AgentUserId + ":" + slug)
 	opts.SetOrderMatters(false)
 	opts.SetUsername(os.Getenv("MQTT_USERNAME"))
 	opts.SetPassword(os.Getenv("MQTT_PASSWORD"))
@@ -267,21 +273,25 @@ func ConnectToMQTT() (client mqtt.Client, err error) {
 }
 
 func MQTT() {
+	clientSlug := strconv.FormatUint(rand.Uint64(), 36)
+	readyCh = make(chan int, 1)
 	mqtt.ERROR = log.New(os.Stdout, "[MQTT ERROR] ", 0)
 	mqtt.CRITICAL = log.New(os.Stdout, "[MQTT CRIT] ", 0)
 	mqtt.WARN = log.New(os.Stdout, "[MQTT WARN]  ", 0)
 	//mqtt.DEBUG = log.New(os.Stdout, "[MQTT DEBUG] ", 0) // quite verbose
 
 	var err error
-	for client, err = ConnectToMQTT(); err != nil; {
+	for client, err = ConnectToMQTT(clientSlug); err != nil; {
 		time.Sleep(1 * time.Second)
 	}
 
+	readyTopic := "tmp/" + clientSlug + "/READY"
 	for {
 		topics := map[string]byte{
 			"tasmota/discovery/#": AtLeastOnce,
 			"stat/+/RESULT":       AtLeastOnce,
 			"tele/+/STATE":        AtLeastOnce,
+			readyTopic:            AtLeastOnce,
 		}
 		token := client.SubscribeMultiple(topics, mqttMessageHandler)
 		token.Wait()
@@ -290,14 +300,26 @@ func MQTT() {
 		}
 		time.Sleep(1 * time.Second)
 	}
-	log.Printf("Subscribed to MQTT Topics")
+	log.Println("Subscribed to MQTT Topics")
 
-	time.Sleep(5 * time.Second)
-
-	log.Println("MQTT Devices:")
-	deviceLock.Lock()
-	for _, d := range devices {
-		log.Println(d)
+	// Send a sentinal to infer whether we've received all retained discovery messages.
+	retained := false
+	token := client.Publish(readyTopic, AtLeastOnce, retained, "DISCOVERY")
+	_ = token.Wait()
+	if token.Error() != nil {
+		log.Panicf("Publish READY failed: %q\n", token.Error())
 	}
-	deviceLock.Unlock()
+	<-readyCh
+	log.Printf("Discovered %d MQTT devices\n", len(devices))
+
+	// Send another sentinal to infer whether we've received all state queries
+	retained = false
+	token = client.Publish(readyTopic, AtLeastOnce, retained, "QUERY")
+	_ = token.Wait()
+	if token.Error() != nil {
+		log.Panicf("Publish READY failed: %q\n", token.Error())
+	}
+	<-readyCh
+
+	log.Println("Completed MQTT Initialization")
 }

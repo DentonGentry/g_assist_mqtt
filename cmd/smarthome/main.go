@@ -42,10 +42,17 @@ func main() {
 	mux.HandleFunc("/fulfillment", HandleFulfillment)
 
 	fmt.Println("Starting MQTT client")
-	go MQTT()
+	MQTT()
 
 	fmt.Println("Initializing OAuth server")
 	SetupOauth(mux)
+
+	log.Println("MQTT Devices:")
+	deviceLock.Lock()
+	for _, d := range devices {
+		log.Println(d)
+	}
+	deviceLock.Unlock()
 
 	log.Fatal(srv.ListenAndServe())
 }
