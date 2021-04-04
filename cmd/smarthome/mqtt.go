@@ -92,7 +92,7 @@ func (device *TasmotaDevice) SendQuery(Text string) {
 }
 
 // to be called from fulfillment goroutines to control the state of the device.
-func (device *TasmotaDevice) SendExecute(On bool) {
+func (device *TasmotaDevice) SendPowerOnOff(On bool) {
 	var state string
 	if On {
 		state = "ON"
@@ -214,13 +214,17 @@ func mqttMessageHandler(client mqtt.Client, msg mqtt.Message) {
 		devices[address] = device
 	} else if len(t) >= 3 && ((t[0] == "stat" && t[2] == "RESULT") || (t[0] == "tele" && t[2] == "STATE")) {
 		address := t[1]
-		device := devices[address]
-		err := ParseTasmotaResult(&device, msg.Payload())
-		if err != nil {
-			log.Println("ParseTasmotaResult failed: " + string(msg.Payload()))
-			return
+		device, ok := devices[address]
+		if ok {
+			err := ParseTasmotaResult(&device, msg.Payload())
+			if err != nil {
+				log.Println("ParseTasmotaResult failed: " + string(msg.Payload()))
+				return
+			}
+			devices[address] = device
+		} else {
+			// a device we are ignoring
 		}
-		devices[address] = device
 	}
 }
 
@@ -296,6 +300,4 @@ func MQTT() {
 		log.Println(d)
 	}
 	deviceLock.Unlock()
-
-	time.Sleep(24 * time.Hour)
 }

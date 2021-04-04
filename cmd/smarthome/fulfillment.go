@@ -43,7 +43,7 @@ type IntentSyncResponseDevice struct {
 	} `json:"deviceInfo,omitempty"`
 }
 
-func GenerateSyncResponse(req IntentSyncRequest) IntentSyncResponse {
+func GenerateSyncResponse(req IntentSyncRequest) ([]byte, error) {
 	var resp IntentSyncResponse
 	resp.RequestId = req.RequestId
 	resp.Payload.AgentUserId = AgentUserId
@@ -54,7 +54,7 @@ func GenerateSyncResponse(req IntentSyncRequest) IntentSyncResponse {
 		resp.Payload.Devices = append(resp.Payload.Devices, d.ToIntentSyncResponseDevice())
 	}
 
-	return resp
+	return json.Marshal(resp)
 }
 
 // -----------------------------------------------------------------------------
@@ -89,7 +89,7 @@ type IntentQueryResponseDevice struct {
 	On     bool   `json:"on,omitempty"`
 }
 
-func GenerateQueryResponse(req IntentQueryRequest) IntentQueryResponse {
+func GenerateQueryResponse(req IntentQueryRequest) ([]byte, error) {
 	var resp IntentQueryResponse
 	resp.RequestId = req.RequestId
 
@@ -109,7 +109,7 @@ func GenerateQueryResponse(req IntentQueryRequest) IntentQueryResponse {
 		}
 	}
 
-	return resp
+	return json.Marshal(resp)
 }
 
 // -----------------------------------------------------------------------------
@@ -119,15 +119,17 @@ func GenerateQueryResponse(req IntentQueryRequest) IntentQueryResponse {
 // {"inputs":[
 //	{"context":{"locale_country":"US","locale_language":"en"},
 //	"intent":"action.devices.EXECUTE",
-//	"payload":{"commands":[
-//	    {"devices":[{"id":"840D8E5D7FCF"}],
-//	    "execution":[
+//	"payload":{
+//	      "commands":[
+//		    {"devices":[{"id":"840D8E5D7FCF"}],
+//		"execution":[
 //		{"command":"action.devices.commands.OnOff",
 //		"params":{"on":false}}]}]}}],
 //  "requestId":"3109023582895760782"}
 type IntentExecuteRequest struct {
 	RequestId string `json:"requestId"`
 	Inputs    []struct {
+		// Context isn't in Google's documentation but is present in requests.
 		Context struct {
 			LocaleCountry  string `json:"locale_country,omitempty"`
 			LocaleLanguage string `json:"locale_language,omitempty"`
@@ -165,59 +167,76 @@ type IntentExecuteResponseCommand struct {
 	Status string   `json:"status"`
 	States struct {
 		On     bool `json:"on,omitempty"`
-		Online bool `json:"online"`
+		Online bool `json:"online,omitempty"`
 	} `json:"states,omitempty"`
 	ErrorCode string `json:"errorCode,omitempty"`
 }
 
-func GenerateExecuteResponse(req IntentExecuteRequest) IntentExecuteResponse {
+func GenerateExecuteResponse(req IntentExecuteRequest) ([]byte, error) {
 	var resp IntentExecuteResponse
 	resp.RequestId = req.RequestId
 
-	if len(req.Inputs[0].Payload.Commands[0].Execution) != 1 {
-		resp.Payload.ErrorCode = "Only Execution length 1 implemented"
-		return resp
-	}
+	// No idea why the struct is defined so deeply nested. In practice, there has
+	// only ever been one Input element, one Commands, and one Execution.
+	for _, input := range req.Inputs {
+		for _, command := range input.Payload.Commands {
+			for _, device := range command.Devices {
+				for _, execution := range command.Execution {
+					var On bool
+					if execution.Command == "action.devices.commands.OnOff" {
+						if execution.Params.On {
+							On = true
+						} else {
+							On = false
+						}
+					} else {
+						var cmd IntentExecuteResponseCommand
+						cmd.Ids = append(cmd.Ids, device.Id)
+						cmd.Status = "ERROR"
+						cmd.ErrorCode = "Command not supported"
+						resp.Payload.Commands = append(resp.Payload.Commands, cmd)
+						continue
+					}
 
-	exe := req.Inputs[0].Payload.Commands[0].Execution[0]
-	var On bool
-	if exe.Command == "action.devices.commands.OnOff" {
-		if exe.Params.On {
-			On = true
-		} else {
-			On = false
+					deviceLock.Lock()
+					var cmd IntentExecuteResponseCommand
+					cmd.Ids = append(cmd.Ids, device.Id)
+					d, ok := devices[device.Id]
+					if !ok {
+						cmd.Status = "OFFLINE"
+						cmd.States.Online = false
+					} else {
+						d.SendPowerOnOff(On)
+						cmd.Status = "ONLINE"
+						cmd.States.On = On
+						cmd.States.Online = true
+					}
+					resp.Payload.Commands = append(resp.Payload.Commands, cmd)
+					deviceLock.Unlock()
+				}
+			}
 		}
-	} else {
-		resp.Payload.ErrorCode = "Only OnOff implemented"
-		return resp
 	}
 
-	deviceLock.Lock()
-	defer deviceLock.Unlock()
-	for _, x := range req.Inputs[0].Payload.Commands[0].Devices {
-		var cmd IntentExecuteResponseCommand
-		cmd.Ids = append(cmd.Ids, x.Id)
-		d, ok := devices[x.Id]
-		if !ok {
-			cmd.Status = "OFFLINE"
-			cmd.States.Online = false
-		} else {
-			log.Printf("Calling SendExecute for %s\n", x.Id)
-			d.SendExecute(On)
-			cmd.Status = "ONLINE"
-			cmd.States.On = On
-			cmd.States.Online = true
-		}
-		resp.Payload.Commands = append(resp.Payload.Commands, cmd)
-	}
+	return json.Marshal(resp)
+}
 
-	return resp
+// -----------------------------------------------------------------------------
+
+// A JSON struct with just the Intent populated, to figure out what it is. This happens
+// to be identical to the v1 IntentSyncRequest, but we don't want to depend on that.
+type IntentDecoder struct {
+	RequestId string `json:"requestId"`
+	Inputs    []struct {
+		Intent string `json:"intent"`
+	} `json:"inputs"`
 }
 
 // -----------------------------------------------------------------------------
 
 func HandleFulfillment(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
+
 	ok, errorStr := ValidateJWT(r)
 	if !ok {
 		http.Error(w, errorStr, http.StatusUnauthorized)
@@ -225,8 +244,8 @@ func HandleFulfillment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	version, ok := r.Header["google-assistant-api-version"]
-	if ok {
-		if len(version) != 1 || version[0] != "v1" {
+	if ok && len(version) >= 1 {
+		if version[0] != "v1" {
 			errorStr = "500 error, unimplemented version: " + version[0]
 			http.Error(w, errorStr, http.StatusInternalServerError)
 			return
@@ -236,52 +255,58 @@ func HandleFulfillment(w http.ResponseWriter, r *http.Request) {
 	data, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "500 error, cannot read body", http.StatusInternalServerError)
+		return
 	}
 	log.Println("fulfillment req: " + string(data))
 
-	var sync IntentSyncRequest
-	err = json.NewDecoder(bytes.NewReader(data)).Decode(&sync)
-	if err == nil && len(sync.Inputs) == 1 && sync.Inputs[0].Intent == "action.devices.SYNC" {
-		resp := GenerateSyncResponse(sync)
-		w.Header().Set("Content-Type", "application/json")
-		body, err := json.Marshal(resp)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			body = []byte("500 error, JSON serialization failed")
-		}
-		log.Println("fulfillment SYNC: " + string(body))
-		w.Write(body)
+	var intentStruct IntentDecoder
+	err = json.NewDecoder(bytes.NewReader(data)).Decode(&intentStruct)
+	if err != nil || len(intentStruct.Inputs) == 0 {
+		http.Error(w, "No intent string", http.StatusBadRequest)
+		return
+	}
+	if len(intentStruct.Inputs) > 1 {
+		http.Error(w, "Only one Input is implemented", http.StatusNotImplemented)
 		return
 	}
 
-	var query IntentQueryRequest
-	err = json.NewDecoder(bytes.NewReader(data)).Decode(&query)
-	if err == nil && len(query.Inputs) > 0 && query.Inputs[0].Intent == "action.devices.QUERY" {
-		resp := GenerateQueryResponse(query)
-		w.Header().Set("Content-Type", "application/json")
-		body, err := json.Marshal(resp)
+	intent := intentStruct.Inputs[0].Intent
+	var body []byte
+	if intent == "action.devices.SYNC" {
+		var sync IntentSyncRequest
+		err = json.NewDecoder(bytes.NewReader(data)).Decode(&sync)
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			body = []byte("500 error, JSON serialization failed")
+			http.Error(w, "Cannot decode SYNC", http.StatusBadRequest)
 		}
-		log.Println("fulfillment QUERY: " + string(body))
-		w.Write(body)
-		return
+
+		body, err = GenerateSyncResponse(sync)
 	}
 
-	var execute IntentExecuteRequest
-	err = json.NewDecoder(bytes.NewReader(data)).Decode(&execute)
-	if err == nil && len(execute.Inputs) > 0 && execute.Inputs[0].Intent == "action.devices.EXECUTE" {
-		log.Println("Calling GenerateExecuteResponse")
-		resp := GenerateExecuteResponse(execute)
-		w.Header().Set("Content-Type", "application/json")
-		body, err := json.Marshal(resp)
+	if intent == "action.devices.QUERY" {
+		var query IntentQueryRequest
+		err = json.NewDecoder(bytes.NewReader(data)).Decode(&query)
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			body = []byte("500 error, JSON serialization failed")
+			http.Error(w, "Cannot decode QUERY", http.StatusBadRequest)
 		}
-		log.Println("fulfillment EXECUTE: " + string(body))
-		w.Write(body)
-		return
+
+		body, err = GenerateQueryResponse(query)
 	}
+	if intent == "action.devices.EXECUTE" {
+		var execute IntentExecuteRequest
+		err = json.NewDecoder(bytes.NewReader(data)).Decode(&execute)
+		if err != nil {
+			http.Error(w, "Cannot decode EXECUTE", http.StatusBadRequest)
+		}
+
+		body, err = GenerateExecuteResponse(execute)
+	}
+
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		body = []byte("500 error, JSON serialization failed")
+	}
+	w.Header().Set("Content-Type", "application/json")
+	log.Println("fulfillment response: " + string(body))
+	w.Write(body)
+	return
 }
