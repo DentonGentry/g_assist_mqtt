@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -18,40 +19,24 @@ const (
 	ExactlyOnce = 2
 )
 
-// Subset of Intent SYNC which we will send back to Google.
-// https://developers.google.com/assistant/smarthome/reference/intent/sync
-type IntentSyncResponseDevice struct {
-	Id     string   `json:"id"`
-	Type   string   `json:"type"`
-	Traits []string `json:"traits"`
-	Name   struct {
-		DefaultNames []string `json:"defaultNames"`
-		Name         string   `json:"name"`
-	} `json:"name"`
-	WillReportState bool `json:"willReportState"`
-	DeviceInfo      struct {
-		Manufacturer string `json:"manufacturer,omitempty"`
-		Model        string `json:"model,omitempty"`
-		SwVersion    string `json:"swVersion,omitempty"`
-	} `json:"deviceInfo,omitempty"`
-}
-
 // State extracted from tasmota/discovery/*/config events, used to construct
 // a Smart Home Sync response
 type TasmotaDevice struct {
-	MacAddress    string
-	IP            string
-	FriendlyName  string
-	Hostname      string
-	Hardware      string
-	Software      string
-	HasRelays     bool
-	HasOnOff      bool
-	TopicName     string
-	TopicPrefixes []string
+	MacAddress   string
+	IP           string
+	FriendlyName string
+	Hostname     string
+	Hardware     string
+	Software     string
+	HasRelays    bool
+	HasOnOff     bool
+	TopicName    string
+	PowerState   string
 }
 
+var client mqtt.Client
 var devices = make(map[string]TasmotaDevice)
+var deviceLock sync.Mutex
 
 // Produce the Device portion of a Google Smart Home Sync Response
 // https://developers.google.com/assistant/smarthome/reference/intent/sync
@@ -73,6 +58,59 @@ func (device *TasmotaDevice) ToIntentSyncResponseDevice() IntentSyncResponseDevi
 	sync.DeviceInfo.SwVersion = device.Software
 
 	return sync
+}
+
+// Produce the Device portion of a Google Smart Home Query Response
+// https://developers.google.com/assistant/smarthome/reference/intent/query
+func (device *TasmotaDevice) ToIntentQueryResponseDevice() IntentQueryResponseDevice {
+	var query IntentQueryResponseDevice
+	query.Id = device.MacAddress
+	query.Online = true
+	query.Status = "SUCCESS"
+	if device.PowerState == "ON" {
+		query.On = true
+	} else {
+		query.On = false
+	}
+
+	return query
+}
+
+// to be called from fulfillment goroutines to send an MQTT query for the state of a device.
+func (device *TasmotaDevice) SendQuery(Text string) {
+	topic := "/cmnd/" + device.TopicName + "/STATE"
+	retained := false
+	log.Println("Publishing to " + topic)
+	token := client.Publish(topic, AtLeastOnce, retained, "")
+	go func() {
+		_ = token.Wait()
+		if token.Error() != nil {
+			log.Printf("DeviceQuery: client.Publish failed: %q\n", token.Error())
+			return
+		}
+	}()
+}
+
+// to be called from fulfillment goroutines to control the state of the device.
+func (device *TasmotaDevice) SendExecute(On bool) {
+	var state string
+	if On {
+		state = "ON"
+	} else {
+		state = "OFF"
+	}
+
+	topic := "/cmnd/" + device.TopicName + "/STATE"
+	retained := false
+	log.Println("Publishing to " + topic)
+	token := client.Publish(topic, ExactlyOnce, retained, state)
+	go func() {
+		_ = token.Wait()
+		if token.Error() != nil {
+			log.Printf("DeviceExecute: client.Publish failed: %q\n", token.Error())
+			return
+		}
+	}()
 }
 
 // Parse JSON received on tasmota/discovery/*/config
@@ -101,13 +139,11 @@ func (device *TasmotaDevice) ToIntentSyncResponseDevice() IntentSyncResponseDevi
 //  "sho":[0,0,0,0],
 //  "ver":1}
 // as described in https://github.com/arendst/Tasmota/issues/9267
-func ParseTasmotaDiscovery(jsonStr []byte) (TasmotaDevice, error) {
-	var device TasmotaDevice
-
+func ParseTasmotaDiscovery(device *TasmotaDevice, jsonStr []byte) error {
 	jsonMap := make(map[string]interface{})
 	err := json.Unmarshal(jsonStr, &jsonMap)
 	if err != nil {
-		return device, err
+		return err
 	}
 
 	device.MacAddress = jsonMap["mac"].(string)
@@ -130,57 +166,12 @@ func ParseTasmotaDiscovery(jsonStr []byte) (TasmotaDevice, error) {
 		item := s.(string)
 		if item == "OFF" || item == "ON" {
 			device.HasOnOff = true
+			device.PowerState = item
 		}
 	}
 
 	device.TopicName = jsonMap["t"].(string)
-	for _, i := range jsonMap["tp"].([]interface{}) {
-		prefix := i.(string)
-		device.TopicPrefixes = append(device.TopicPrefixes, prefix)
-	}
-
-	return device, nil
-}
-
-// Call for MQTT messages arriving on /tasmota/discovery/#
-func TasmotaDiscoveryMessageHandler(client mqtt.Client, msg mqtt.Message) {
-	t := strings.Split(msg.Topic(), "/")
-	if len(t) != 4 || t[0] != "tasmota" || t[1] != "discovery" {
-		log.Println("TasmotaDiscovery unknown topic: " + msg.Topic())
-		return
-	}
-
-	address := t[2]
-	if t[3] != "config" {
-		// we don't process "/tasmota/discovery/*/sensors" yet
-		return
-	}
-
-	device, err := ParseTasmotaDiscovery(msg.Payload())
-	if err == nil {
-		devices[address] = device
-
-		// Subscribe to the device's topics right away
-		topics := make(map[string]byte)
-		for _, prefix := range device.TopicPrefixes {
-			if prefix != "stat" && prefix != "tele" {
-				continue // no need to subscribe to command channel etc
-			}
-			topic := "/" + prefix + "/" + device.TopicName + "/#"
-			topics[topic] = AtLeastOnce
-		}
-		token := client.SubscribeMultiple(topics,
-			func(client mqtt.Client, msg mqtt.Message) {
-				m := SerializedRcvMsg{"StateMessageHandler", msg}
-				serializedRcvMsgCh <- m
-			})
-		go func() {
-			_ = token.Wait()
-			if token.Error() != nil {
-				log.Printf("subscribe %s=%v", device.TopicName, token.Error())
-			}
-		}()
-	}
+	return nil
 }
 
 // handles /stat/device-topic/RESULT and /tele/device-topic/STATE messages
@@ -191,71 +182,46 @@ func TasmotaDiscoveryMessageHandler(client mqtt.Client, msg mqtt.Message) {
 //  "SleepMode":"Dynamic","Sleep":50,"LoadAvg":19,"MqttCount":20,"POWER":"OFF",
 //  "Wifi":{"AP":2,"SSId":"MY-SSID","BSSId":"00:11:22:33:44:55","Channel":1,"RSSI":44,
 //          "Signal":-78,"LinkCount":17,"Downtime":"0T00:05:18"}}
-func StateMessageHandler(client mqtt.Client, msg mqtt.Message) {
+func ParseTasmotaResult(device *TasmotaDevice, jsonStr []byte) error {
+	jsonMap := make(map[string]interface{})
+	err := json.Unmarshal(jsonStr, &jsonMap)
+	if err != nil {
+		return err
+	}
+
+	device.PowerState = jsonMap["POWER"].(string)
+	return nil
+}
+
+func mqttMessageHandler(client mqtt.Client, msg mqtt.Message) {
 	t := strings.Split(msg.Topic(), "/")
-	if len(t) < 3 {
-		log.Println("MQTT State handler: unknown topic: " + msg.Topic())
-		return
-	}
-	log.Println("MQTT State handler: " + msg.Topic())
-}
+	deviceLock.Lock()
+	defer deviceLock.Unlock()
 
-type SerializedRcvMsg struct {
-	handler string
-	msg     mqtt.Message
-}
-type SerializedQuery struct {
-	Id string
-}
-
-var serializedRcvMsgCh chan SerializedRcvMsg
-var serializedQueryCh chan SerializedQuery
-
-// MQTT uses a goroutine per incoming message. Handling anything which needs to
-// access the devices map would either require locking, or to serialize reception
-// to one goroutine. We've chosen to do that: this routine pulls messages from
-// a channel to be processwed one by one.
-func SerializeDevicesFunc(client mqtt.Client) {
-	for {
-		select {
-		case m := <-serializedRcvMsgCh:
-			serializeReceive(client, m)
-		case q := <-serializedQueryCh:
-			serializePublish(client, q)
-		}
-	}
-}
-
-func serializeReceive(client mqtt.Client, m SerializedRcvMsg) {
-	if m.handler == "StateMessageHandler" {
-		StateMessageHandler(client, m.msg)
-	} else if m.handler == "TasmotaDiscoveryMessageHandler" {
-		TasmotaDiscoveryMessageHandler(client, m.msg)
-	}
-}
-
-func serializePublish(client mqtt.Client, q SerializedQuery) {
-	d, ok := devices[q.Id]
-	if !ok {
-		log.Println("serializePublish: unknown Device: " + q.Id)
-		return
-	}
-
-	topic := "/cmnd/" + d.TopicName + "/STATE"
-	retained := false
-	log.Println("Publishing to " + topic)
-	token := client.Publish(topic, AtLeastOnce, retained, "")
-	go func() {
-		_ = token.Wait()
-		if token.Error() != nil {
+	if len(t) == 4 && t[0] == "tasmota" && t[1] == "discovery" {
+		if t[3] != "config" {
+			// we don't process "/tasmota/discovery/+/sensors" yet
 			return
 		}
-	}()
-}
 
-func DeviceQuery(Id string, Text string) {
-	q := SerializedQuery{Id}
-	serializedQueryCh <- q
+		address := t[2]
+		device := devices[address]
+		err := ParseTasmotaDiscovery(&device, msg.Payload())
+		if err != nil {
+			log.Println("ParseTasmotaDiscovery failed: " + string(msg.Payload()))
+			return
+		}
+		devices[address] = device
+	} else if len(t) >= 3 && ((t[0] == "stat" && t[2] == "RESULT") || (t[0] == "tele" && t[2] == "STATE")) {
+		address := t[1]
+		device := devices[address]
+		err := ParseTasmotaResult(&device, msg.Payload())
+		if err != nil {
+			log.Println("ParseTasmotaResult failed: " + string(msg.Payload()))
+			return
+		}
+		devices[address] = device
+	}
 }
 
 func DefaultMessageHandler(client mqtt.Client, msg mqtt.Message) {
@@ -268,8 +234,12 @@ func OnConnectHandler(client mqtt.Client) {
 
 func ConnectionLostHandler(client mqtt.Client, err error) {
 	log.Printf("MQTT connection lost: %v", err)
+
+	// TODO: Need to handle getting disconnected.
+	// Alternately, maybe exit if the connection is lost and let Cloud Run spawn a new one.
 }
 
+// Make one attempt to connect to the MQTT broker. Expected to be called from a loop.
 func ConnectToMQTT() (client mqtt.Client, err error) {
 	opts := mqtt.NewClientOptions()
 	broker := "mqtt://" + os.Getenv("MQTT_IP_ADDR") + ":" + os.Getenv("MQTT_PORT")
@@ -298,34 +268,34 @@ func MQTT() {
 	mqtt.WARN = log.New(os.Stdout, "[MQTT WARN]  ", 0)
 	//mqtt.DEBUG = log.New(os.Stdout, "[MQTT DEBUG] ", 0) // quite verbose
 
-	var client mqtt.Client
 	var err error
 	for client, err = ConnectToMQTT(); err != nil; {
 		time.Sleep(1 * time.Second)
 	}
 
-	serializedRcvMsgCh = make(chan SerializedRcvMsg, 100)
-	serializedQueryCh = make(chan SerializedQuery, 100)
-	go SerializeDevicesFunc(client)
-
 	for {
-		token := client.Subscribe("tasmota/discovery/#", AtLeastOnce,
-			func(client mqtt.Client, msg mqtt.Message) {
-				m := SerializedRcvMsg{"TasmotaDiscoveryMessageHandler", msg}
-				serializedRcvMsgCh <- m
-			})
+		topics := map[string]byte{
+			"tasmota/discovery/#": AtLeastOnce,
+			"stat/+/RESULT":       AtLeastOnce,
+			"tele/+/STATE":        AtLeastOnce,
+		}
+		token := client.SubscribeMultiple(topics, mqttMessageHandler)
 		token.Wait()
 		if token.Error() == nil {
 			break
 		}
 		time.Sleep(1 * time.Second)
 	}
-	log.Printf("Subscribed to Tasmota Discovery Protocol")
+	log.Printf("Subscribed to MQTT Topics")
 
 	time.Sleep(5 * time.Second)
+
 	log.Println("MQTT Devices:")
+	deviceLock.Lock()
+	defer deviceLock.Unlock()
 	for _, d := range devices {
 		log.Println(d)
 	}
 
+	time.Sleep(24 * time.Hour)
 }
