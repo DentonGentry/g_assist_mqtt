@@ -35,6 +35,7 @@ func main() {
 	mux.HandleFunc("/quitquitquit", func(w http.ResponseWriter, r *http.Request) {
 		srv.Shutdown(context.Background())
 	})
+	mux.HandleFunc("/debug", HandleDebug)
 	mux.HandleFunc("/", HandleRoot)
 
 	fmt.Println("Initializing fulfillment")

@@ -292,10 +292,10 @@ func MQTT() {
 
 	log.Println("MQTT Devices:")
 	deviceLock.Lock()
-	defer deviceLock.Unlock()
 	for _, d := range devices {
 		log.Println(d)
 	}
+	deviceLock.Unlock()
 
 	time.Sleep(24 * time.Hour)
 }
