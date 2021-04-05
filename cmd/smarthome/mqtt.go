@@ -32,7 +32,14 @@ type TasmotaDevice struct {
 	HasOnOff      bool
 	TopicName     string
 	PowerState    string
-	OneshotNotify map[string]chan IntentQueryResponseDevice
+	OneshotNotify map[string]chan NotifyState
+}
+
+// Notification sent to listeners upon receiving a state change from a device.
+// The listener transforms this into a Query response or Execute response.
+type NotifyState struct {
+	Id         string
+	PowerState string
 }
 
 var client mqtt.Client
@@ -42,7 +49,7 @@ var readyCh chan int
 
 func NewDevice() TasmotaDevice {
 	var device TasmotaDevice
-	device.OneshotNotify = make(map[string]chan IntentQueryResponseDevice)
+	device.OneshotNotify = make(map[string]chan NotifyState)
 	return device
 }
 
@@ -197,9 +204,9 @@ func parseTasmotaResult(device *TasmotaDevice, jsonStr []byte) error {
 
 	device.PowerState = jsonMap["POWER"].(string)
 
-	queryResponseDevice := device.ToIntentQueryResponseDevice()
+	update := NotifyState{Id: device.MacAddress, PowerState: device.PowerState}
 	for key, ch := range device.OneshotNotify {
-		ch <- queryResponseDevice
+		ch <- update
 		delete(device.OneshotNotify, key)
 	}
 
@@ -263,16 +270,34 @@ func ConnectionLostHandler(client mqtt.Client, err error) {
 // Make one attempt to connect to the MQTT broker. Expected to be called from a loop.
 func ConnectToMQTT(slug string) (client mqtt.Client, err error) {
 	opts := mqtt.NewClientOptions()
+
 	broker := "mqtt://" + os.Getenv("MQTT_IP_ADDR") + ":" + os.Getenv("MQTT_PORT")
 	opts.AddBroker(broker)
-	// Only one client with the same ID can connect, add a random slug at end
-	opts.SetClientID(AgentUserId + ":" + slug)
-	opts.SetOrderMatters(false)
 	opts.SetUsername(os.Getenv("MQTT_USERNAME"))
 	opts.SetPassword(os.Getenv("MQTT_PASSWORD"))
+
+	// improve average latency by allowing packets to arrive out of order.
+	// everything we do is stateless, operations cannot depend on previous ops.
+	opts.SetOrderMatters(false)
+
+	// Only one client with the same ID can connect, add a random slug at end
+	opts.SetClientID("CloudRun:" + slug)
+
+	// Cloud Run spins up an instance when an HTTP request arrives, the longer it
+	// takes to respond the longer the latency to the user. We want to start trying
+	// to connect to the tailscaled SOCKS5 proxy before tailscaled has managed to
+	// connect to the Tailnet, so the first few attempts will definitely fail.
+	// There is no downside to retrying frequently, until Tailscale connects.
+	opts.SetConnectRetry(true)
+	opts.SetConnectRetryInterval(500 * time.Millisecond)
+	opts.SetAutoReconnect(true)
+	opts.SetMaxReconnectInterval(500 * time.Millisecond)
+	opts.SetWriteTimeout(30 * time.Second)
+
 	opts.SetDefaultPublishHandler(DefaultMessageHandler)
 	opts.OnConnect = OnConnectHandler
 	opts.OnConnectionLost = ConnectionLostHandler
+
 	client = mqtt.NewClient(opts)
 	token := client.Connect()
 	token.Wait()

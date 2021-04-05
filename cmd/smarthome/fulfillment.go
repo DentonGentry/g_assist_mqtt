@@ -92,7 +92,7 @@ type IntentQueryResponseDevice struct {
 func GenerateQueryResponse(req IntentQueryRequest) ([]byte, error) {
 	var resp IntentQueryResponse
 	resp.RequestId = req.RequestId
-	responseCh := make(chan IntentQueryResponseDevice, len(req.Inputs[0].Payload.Devices))
+	responseCh := make(chan NotifyState, len(req.Inputs[0].Payload.Devices))
 
 	n := 0
 	deviceLock.Lock()
@@ -113,8 +113,14 @@ func GenerateQueryResponse(req IntentQueryRequest) ([]byte, error) {
 	deviceLock.Unlock()
 
 	for ; n > 0; n-- {
-		queryResponseDevice := <-responseCh
-		resp.Payload.Devices = append(resp.Payload.Devices, queryResponseDevice)
+		update := <-responseCh
+		query := IntentQueryResponseDevice{Id: update.Id, Online: true, Status: "SUCCESS"}
+		if update.PowerState == "ON" {
+			query.On = true
+		} else {
+			query.On = false
+		}
+		resp.Payload.Devices = append(resp.Payload.Devices, query)
 	}
 
 	return json.Marshal(resp)
@@ -183,9 +189,12 @@ type IntentExecuteResponseCommand struct {
 func GenerateExecuteResponse(req IntentExecuteRequest) ([]byte, error) {
 	var resp IntentExecuteResponse
 	resp.RequestId = req.RequestId
+	responseCh := make(chan NotifyState, len(req.Inputs[0].Payload.Commands[0].Execution))
 
 	// No idea why the struct is defined so deeply nested. In practice, there has
 	// only ever been one Input element, one Commands, and one Execution.
+	n := 0
+	deviceLock.Lock()
 	for _, input := range req.Inputs {
 		for _, command := range input.Payload.Commands {
 			for _, device := range command.Devices {
@@ -206,7 +215,6 @@ func GenerateExecuteResponse(req IntentExecuteRequest) ([]byte, error) {
 						continue
 					}
 
-					deviceLock.Lock()
 					var cmd IntentExecuteResponseCommand
 					cmd.Ids = append(cmd.Ids, device.Id)
 					d, ok := devices[device.Id]
@@ -214,16 +222,29 @@ func GenerateExecuteResponse(req IntentExecuteRequest) ([]byte, error) {
 						cmd.Status = "OFFLINE"
 						cmd.States.Online = false
 					} else {
+						d.OneshotNotify[req.RequestId] = responseCh
 						d.SendPowerOnOff(On)
-						cmd.Status = "ONLINE"
-						cmd.States.On = On
-						cmd.States.Online = true
+						n = n + 1
 					}
-					resp.Payload.Commands = append(resp.Payload.Commands, cmd)
-					deviceLock.Unlock()
 				}
 			}
 		}
+	}
+	deviceLock.Unlock()
+
+	for ; n > 0; n-- {
+		update := <-responseCh
+
+		var exe IntentExecuteResponseCommand
+		exe.Ids = append(exe.Ids, update.Id)
+		exe.Status = "SUCCESS"
+		exe.States.Online = true
+		if update.PowerState == "ON" {
+			exe.States.On = true
+		} else {
+			exe.States.On = false
+		}
+		resp.Payload.Commands = append(resp.Payload.Commands, exe)
 	}
 
 	return json.Marshal(resp)
