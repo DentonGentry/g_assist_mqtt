@@ -92,9 +92,10 @@ type IntentQueryResponseDevice struct {
 func GenerateQueryResponse(req IntentQueryRequest) ([]byte, error) {
 	var resp IntentQueryResponse
 	resp.RequestId = req.RequestId
+	responseCh := make(chan IntentQueryResponseDevice, len(req.Inputs[0].Payload.Devices))
 
+	n := 0
 	deviceLock.Lock()
-	defer deviceLock.Unlock()
 	for _, q := range req.Inputs[0].Payload.Devices {
 		d, ok := devices[q.Id]
 		if !ok {
@@ -104,9 +105,16 @@ func GenerateQueryResponse(req IntentQueryRequest) ([]byte, error) {
 			offline.Status = "OFFLINE"
 			resp.Payload.Devices = append(resp.Payload.Devices, offline)
 		} else {
-			resp.Payload.Devices = append(resp.Payload.Devices,
-				d.ToIntentQueryResponseDevice())
+			d.OneshotNotify[req.RequestId] = responseCh
+			d.SendQuery()
+			n = n + 1
 		}
+	}
+	deviceLock.Unlock()
+
+	for ; n > 0; n-- {
+		queryResponseDevice := <-responseCh
+		resp.Payload.Devices = append(resp.Payload.Devices, queryResponseDevice)
 	}
 
 	return json.Marshal(resp)

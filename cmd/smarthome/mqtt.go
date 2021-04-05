@@ -22,22 +22,29 @@ const (
 // State extracted from tasmota/discovery/*/config events, used to construct
 // a Smart Home Sync response
 type TasmotaDevice struct {
-	MacAddress   string
-	IP           string
-	FriendlyName string
-	Hostname     string
-	Hardware     string
-	Software     string
-	HasRelays    bool
-	HasOnOff     bool
-	TopicName    string
-	PowerState   string
+	MacAddress    string
+	IP            string
+	FriendlyName  string
+	Hostname      string
+	Hardware      string
+	Software      string
+	HasRelays     bool
+	HasOnOff      bool
+	TopicName     string
+	PowerState    string
+	OneshotNotify map[string]chan IntentQueryResponseDevice
 }
 
 var client mqtt.Client
 var devices = make(map[string]TasmotaDevice)
 var deviceLock sync.Mutex
 var readyCh chan int
+
+func NewDevice() TasmotaDevice {
+	var device TasmotaDevice
+	device.OneshotNotify = make(map[string]chan IntentQueryResponseDevice)
+	return device
+}
 
 // Produce the Device portion of a Google Smart Home Sync Response
 // https://developers.google.com/assistant/smarthome/reference/intent/sync
@@ -78,10 +85,10 @@ func (device *TasmotaDevice) ToIntentQueryResponseDevice() IntentQueryResponseDe
 }
 
 // to be called from fulfillment goroutines to send an MQTT query for the state of a device.
-func (device *TasmotaDevice) SendQuery(Text string) {
+func (device *TasmotaDevice) SendQuery() {
 	topic := "/cmnd/" + device.TopicName + "/STATE"
 	retained := false
-	token := client.Publish(topic, AtLeastOnce, retained, "")
+	token := client.Publish(topic, AtLeastOnce, retained, "QUERY")
 	go func() {
 		_ = token.Wait()
 		if token.Error() != nil {
@@ -138,7 +145,7 @@ func (device *TasmotaDevice) SendPowerOnOff(On bool) {
 //  "sho":[0,0,0,0],
 //  "ver":1}
 // as described in https://github.com/arendst/Tasmota/issues/9267
-func ParseTasmotaDiscovery(device *TasmotaDevice, jsonStr []byte) error {
+func parseTasmotaDiscovery(device *TasmotaDevice, jsonStr []byte) error {
 	jsonMap := make(map[string]interface{})
 	err := json.Unmarshal(jsonStr, &jsonMap)
 	if err != nil {
@@ -181,7 +188,7 @@ func ParseTasmotaDiscovery(device *TasmotaDevice, jsonStr []byte) error {
 //  "SleepMode":"Dynamic","Sleep":50,"LoadAvg":19,"MqttCount":20,"POWER":"OFF",
 //  "Wifi":{"AP":2,"SSId":"MY-SSID","BSSId":"00:11:22:33:44:55","Channel":1,"RSSI":44,
 //          "Signal":-78,"LinkCount":17,"Downtime":"0T00:05:18"}}
-func ParseTasmotaResult(device *TasmotaDevice, jsonStr []byte) error {
+func parseTasmotaResult(device *TasmotaDevice, jsonStr []byte) error {
 	jsonMap := make(map[string]interface{})
 	err := json.Unmarshal(jsonStr, &jsonMap)
 	if err != nil {
@@ -189,6 +196,13 @@ func ParseTasmotaResult(device *TasmotaDevice, jsonStr []byte) error {
 	}
 
 	device.PowerState = jsonMap["POWER"].(string)
+
+	queryResponseDevice := device.ToIntentQueryResponseDevice()
+	for key, ch := range device.OneshotNotify {
+		ch <- queryResponseDevice
+		delete(device.OneshotNotify, key)
+	}
+
 	return nil
 }
 
@@ -204,23 +218,23 @@ func mqttMessageHandler(client mqtt.Client, msg mqtt.Message) {
 		}
 
 		address := t[2]
-		device := devices[address]
-		err := ParseTasmotaDiscovery(&device, msg.Payload())
+		device := NewDevice()
+		err := parseTasmotaDiscovery(&device, msg.Payload())
 		if err != nil {
-			log.Println("ParseTasmotaDiscovery failed: " + string(msg.Payload()))
+			log.Println("parseTasmotaDiscovery failed: " + string(msg.Payload()))
 			return
 		}
 		devices[address] = device
 
 		// fetch current state immediately
-		device.SendQuery("")
+		device.SendQuery()
 	} else if len(t) >= 3 && ((t[0] == "stat" && t[2] == "RESULT") || (t[0] == "tele" && t[2] == "STATE")) {
 		address := t[1]
 		device, ok := devices[address]
 		if ok {
-			err := ParseTasmotaResult(&device, msg.Payload())
+			err := parseTasmotaResult(&device, msg.Payload())
 			if err != nil {
-				log.Println("ParseTasmotaResult failed: " + string(msg.Payload()))
+				log.Println("parseTasmotaResult failed: " + string(msg.Payload()))
 				return
 			}
 			devices[address] = device
@@ -244,9 +258,6 @@ func OnConnectHandler(client mqtt.Client) {
 
 func ConnectionLostHandler(client mqtt.Client, err error) {
 	log.Printf("MQTT connection lost: %v", err)
-
-	// TODO: Need to handle getting disconnected.
-	// Alternately, maybe exit if the connection is lost and let Cloud Run spawn a new one.
 }
 
 // Make one attempt to connect to the MQTT broker. Expected to be called from a loop.
