@@ -5,6 +5,11 @@ const app = new smarthome.App("1.0.0")
     console.debug("IDENTIFY request:", request);
 
     const device = request.inputs[0].payload.device;
+    if (device.mdnsScanData === undefined) {
+        throw Error(`indentify request missing mDNS`);
+    }
+    console.log(device.mdnsScanData);
+    // TODO: find device
 
     return new Promise((resolve, reject) => {
       const response = {
