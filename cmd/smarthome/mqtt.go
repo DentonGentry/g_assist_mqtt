@@ -75,7 +75,7 @@ func (device *TasmotaDevice) ToIntentSyncResponseDevice() IntentSyncResponseDevi
 	sync.DeviceInfo.Model = device.Hardware
 	sync.DeviceInfo.SwVersion = device.Software
 	sync.OtherDeviceIds.AgentId = ProjectId
-	sync.OtherDeviceIds.DeviceId = device.MacAddress
+	sync.OtherDeviceIds.DeviceId = device.Hostname
 
 	return sync
 }
@@ -278,7 +278,7 @@ func HashString(s string) string {
 }
 
 // Make one attempt to connect to the MQTT broker. Expected to be called from a loop.
-func ConnectToMQTT(InstanceId string) (client mqtt.Client, err error) {
+func ConnectToMQTT(slug string) (client mqtt.Client, err error) {
 	opts := mqtt.NewClientOptions()
 
 	broker := "mqtt://" + os.Getenv("MQTT_IP_ADDR") + ":" + os.Getenv("MQTT_PORT")
@@ -291,7 +291,6 @@ func ConnectToMQTT(InstanceId string) (client mqtt.Client, err error) {
 	opts.SetOrderMatters(false)
 
 	// Only one client with the same ID can connect, add a random slug at end
-	slug := HashString(InstanceId)
 	opts.SetClientID("CloudRun" + slug)
 
 	// Cloud Run spins up an instance when an HTTP request arrives, the longer it
@@ -320,8 +319,9 @@ func ConnectToMQTT(InstanceId string) (client mqtt.Client, err error) {
 	return client, nil
 }
 
-func GetMetadata(url string) string {
+func GetMetadata(urlPath string) string {
 	client := &http.Client{}
+	url := "http://metadata.gogle.internal/computeMetadata/" + urlPath
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		log.Printf("Unable to allocate http.NewRequest: %q\n", err)
@@ -345,8 +345,9 @@ func GetMetadata(url string) string {
 }
 
 func MQTT() {
-	ProjectId = GetMetadata("http://metadata.google.internal/computeMetadata/v1/project/project-id")
-	InstanceId := GetMetadata("http://metadata.google.internal/computeMetadata/v1/instance/id")
+	ProjectId = GetMetadata("v1/project/project-id")
+	InstanceId := GetMetadata("v1/instance/id")
+	slug := HashString(InstanceId)
 	readyCh = make(chan int, 1)
 	mqtt.ERROR = log.New(os.Stdout, "[MQTT ERROR] ", 0)
 	mqtt.CRITICAL = log.New(os.Stdout, "[MQTT CRIT] ", 0)
@@ -358,7 +359,7 @@ func MQTT() {
 		time.Sleep(1 * time.Second)
 	}
 
-	readyTopic := "tmp/" + InstanceId + "/READY"
+	readyTopic := "tmp/" + slug + "/READY"
 	for {
 		topics := map[string]byte{
 			"tasmota/discovery/#": AtLeastOnce,
