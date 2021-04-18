@@ -3,8 +3,10 @@ package main
 import (
 	"encoding/json"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"hash/fnv"
+	"io/ioutil"
 	"log"
-	"math/rand"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -46,6 +48,7 @@ var client mqtt.Client
 var devices = make(map[string]TasmotaDevice)
 var deviceLock sync.Mutex
 var readyCh chan int
+var ProjectId string
 
 func NewDevice() TasmotaDevice {
 	var device TasmotaDevice
@@ -71,6 +74,8 @@ func (device *TasmotaDevice) ToIntentSyncResponseDevice() IntentSyncResponseDevi
 	sync.DeviceInfo.Manufacturer = "Tasmota"
 	sync.DeviceInfo.Model = device.Hardware
 	sync.DeviceInfo.SwVersion = device.Software
+	sync.OtherDeviceIds.AgentId = ProjectId
+	sync.OtherDeviceIds.DeviceId = device.MacAddress
 
 	return sync
 }
@@ -92,17 +97,13 @@ func (device *TasmotaDevice) ToIntentQueryResponseDevice() IntentQueryResponseDe
 }
 
 // to be called from fulfillment goroutines to send an MQTT query for the state of a device.
-func (device *TasmotaDevice) SendQuery() {
-	topic := "/cmnd/" + device.TopicName + "/STATE"
+func SendQuery(topic string) {
 	retained := false
 	token := client.Publish(topic, AtLeastOnce, retained, "QUERY")
-	go func() {
-		_ = token.Wait()
-		if token.Error() != nil {
-			log.Printf("DeviceQuery: client.Publish failed: %q\n", token.Error())
-			return
-		}
-	}()
+	_ = token.Wait()
+	if token.Error() != nil {
+		log.Printf("DeviceQuery: client.Publish failed: %q\n", token.Error())
+	}
 }
 
 // to be called from fulfillment goroutines to control the state of the device.
@@ -233,8 +234,11 @@ func mqttMessageHandler(client mqtt.Client, msg mqtt.Message) {
 		}
 		devices[address] = device
 
-		// fetch current state immediately
-		device.SendQuery()
+		topic := "/cmnd/" + device.TopicName + "/STATE"
+		go func() {
+			// fetch current state immediately
+			SendQuery(topic)
+		}()
 	} else if len(t) >= 3 && ((t[0] == "stat" && t[2] == "RESULT") || (t[0] == "tele" && t[2] == "STATE")) {
 		address := t[1]
 		device, ok := devices[address]
@@ -267,8 +271,14 @@ func ConnectionLostHandler(client mqtt.Client, err error) {
 	log.Printf("MQTT connection lost: %v", err)
 }
 
+func HashString(s string) string {
+	h := fnv.New64()
+	h.Write([]byte(s))
+	return strconv.FormatUint(h.Sum64(), 36)
+}
+
 // Make one attempt to connect to the MQTT broker. Expected to be called from a loop.
-func ConnectToMQTT(slug string) (client mqtt.Client, err error) {
+func ConnectToMQTT(InstanceId string) (client mqtt.Client, err error) {
 	opts := mqtt.NewClientOptions()
 
 	broker := "mqtt://" + os.Getenv("MQTT_IP_ADDR") + ":" + os.Getenv("MQTT_PORT")
@@ -281,7 +291,8 @@ func ConnectToMQTT(slug string) (client mqtt.Client, err error) {
 	opts.SetOrderMatters(false)
 
 	// Only one client with the same ID can connect, add a random slug at end
-	opts.SetClientID("CloudRun:" + slug)
+	slug := HashString(InstanceId)
+	opts.SetClientID("CloudRun" + slug)
 
 	// Cloud Run spins up an instance when an HTTP request arrives, the longer it
 	// takes to respond the longer the latency to the user. We want to start trying
@@ -293,6 +304,7 @@ func ConnectToMQTT(slug string) (client mqtt.Client, err error) {
 	opts.SetAutoReconnect(true)
 	opts.SetMaxReconnectInterval(500 * time.Millisecond)
 	opts.SetWriteTimeout(30 * time.Second)
+	opts.SetPingTimeout(30 * time.Second)
 
 	opts.SetDefaultPublishHandler(DefaultMessageHandler)
 	opts.OnConnect = OnConnectHandler
@@ -308,8 +320,33 @@ func ConnectToMQTT(slug string) (client mqtt.Client, err error) {
 	return client, nil
 }
 
+func GetMetadata(url string) string {
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		log.Printf("Unable to allocate http.NewRequest: %q\n", err)
+		return ""
+	}
+	req.Header.Set("Metadata-Flavor", "Google")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("HTTP GET failed: %q\n", err)
+		return ""
+	}
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("HTTP GET ReadAll failed: %q\n", err)
+		return ""
+	}
+
+	return string(body)
+}
+
 func MQTT() {
-	clientSlug := strconv.FormatUint(rand.Uint64(), 36)
+	ProjectId = GetMetadata("http://metadata.google.internal/computeMetadata/v1/project/project-id")
+	InstanceId := GetMetadata("http://metadata.google.internal/computeMetadata/v1/instance/id")
 	readyCh = make(chan int, 1)
 	mqtt.ERROR = log.New(os.Stdout, "[MQTT ERROR] ", 0)
 	mqtt.CRITICAL = log.New(os.Stdout, "[MQTT CRIT] ", 0)
@@ -317,11 +354,11 @@ func MQTT() {
 	//mqtt.DEBUG = log.New(os.Stdout, "[MQTT DEBUG] ", 0) // quite verbose
 
 	var err error
-	for client, err = ConnectToMQTT(clientSlug); err != nil; {
+	for client, err = ConnectToMQTT(InstanceId); err != nil; {
 		time.Sleep(1 * time.Second)
 	}
 
-	readyTopic := "tmp/" + clientSlug + "/READY"
+	readyTopic := "tmp/" + InstanceId + "/READY"
 	for {
 		topics := map[string]byte{
 			"tasmota/discovery/#": AtLeastOnce,

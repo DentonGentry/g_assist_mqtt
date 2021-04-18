@@ -41,6 +41,10 @@ type IntentSyncResponseDevice struct {
 		Model        string `json:"model,omitempty"`
 		SwVersion    string `json:"swVersion,omitempty"`
 	} `json:"deviceInfo,omitempty"`
+	OtherDeviceIds struct {
+		AgentId  string `json:"agentId,omitempty"`
+		DeviceId string `json:"deviceId"`
+	} `json:"otherDeviceIds,omitempty"`
 }
 
 func GenerateSyncResponse(req IntentSyncRequest) ([]byte, error) {
@@ -106,7 +110,8 @@ func GenerateQueryResponse(req IntentQueryRequest) ([]byte, error) {
 			resp.Payload.Devices = append(resp.Payload.Devices, offline)
 		} else {
 			d.OneshotNotify[req.RequestId] = responseCh
-			d.SendQuery()
+			topic := "/cmnd/" + d.TopicName + "/STATE"
+			SendQuery(topic)
 			n = n + 1
 		}
 	}
