@@ -9,7 +9,14 @@ const app = new smarthome.App("1.0.0")
         throw Error(`indentify request missing mDNS`);
     }
     console.log(device.mdnsScanData);
-    // TODO: find device
+
+    var verificationId = ""
+    if (typeof device.mdnsScanData.txt !== undefined &&
+        typeof device.mdnsScanData.name !== undefined &&
+        typeof device.mdnsScanData.txt.deviceType !== undefined &&
+        device.mdnsScanData.txt.deviceType == "tasmota") {
+      verificationId = device.mdnsScanData.name
+    }
 
     return new Promise((resolve, reject) => {
       const response = {
@@ -18,7 +25,7 @@ const app = new smarthome.App("1.0.0")
         payload: {
           device: {
             id: device.id || "",
-            // TODO: add verificationId.
+            verificationId: verificationId
           },
         },
       };
