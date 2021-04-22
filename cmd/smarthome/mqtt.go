@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"inet.af/netaddr"
 )
 
 const (
@@ -281,7 +283,12 @@ func HashString(s string) string {
 func ConnectToMQTT(slug string) (client mqtt.Client, err error) {
 	opts := mqtt.NewClientOptions()
 
-	broker := "mqtt://" + os.Getenv("MQTT_IP_ADDR") + ":" + os.Getenv("MQTT_PORT")
+	addr := os.Getenv("MQTT_IP_ADDR")
+	ip, err := netaddr.ParseIP(addr)
+	if err == nil && ip.Is6() {
+		addr = "[" + addr + "]"
+	}
+	broker := "mqtt://" + addr + ":" + os.Getenv("MQTT_PORT")
 	opts.AddBroker(broker)
 	opts.SetUsername(os.Getenv("MQTT_USERNAME"))
 	opts.SetPassword(os.Getenv("MQTT_PASSWORD"))
@@ -291,7 +298,7 @@ func ConnectToMQTT(slug string) (client mqtt.Client, err error) {
 	opts.SetOrderMatters(false)
 
 	// Only one client with the same ID can connect, add a random slug at end
-	opts.SetClientID("CloudRun" + slug)
+	opts.SetClientID("CloudRun:" + slug[:12])
 
 	// Cloud Run spins up an instance when an HTTP request arrives, the longer it
 	// takes to respond the longer the latency to the user. We want to start trying
@@ -321,7 +328,7 @@ func ConnectToMQTT(slug string) (client mqtt.Client, err error) {
 
 func GetMetadata(urlPath string) string {
 	client := &http.Client{}
-	url := "http://metadata.gogle.internal/computeMetadata/" + urlPath
+	url := "http://metadata.google.internal/computeMetadata/" + urlPath
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		log.Printf("Unable to allocate http.NewRequest: %q\n", err)
@@ -355,7 +362,7 @@ func MQTT() {
 	//mqtt.DEBUG = log.New(os.Stdout, "[MQTT DEBUG] ", 0) // quite verbose
 
 	var err error
-	for client, err = ConnectToMQTT(InstanceId); err != nil; {
+	for client, err = ConnectToMQTT(slug); err != nil; {
 		time.Sleep(1 * time.Second)
 	}
 

@@ -14,5 +14,5 @@ require (
 	golang.org/x/net v0.0.0-20210316092652-d523dce5a7f4 // indirect
 	golang.org/x/sys v0.0.0-20210320140829-1e4c9ba3b0c4 // indirect
 	golang.org/x/text v0.3.5 // indirect
-	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect
+	inet.af/netaddr v0.0.0-20210421205553-78c777480f22
 )
