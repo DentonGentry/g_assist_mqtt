@@ -5,7 +5,7 @@
     },
     "devDependencies": {
         "array.prototype.flat": "^1.2.3",
-        "ava": "^3.4.0",
+        "ava": "^5.0.1",
         "express": "^4.17.1",
         "ts-loader": "^7.0.5",
         "ts-node": "^8.10.2",
